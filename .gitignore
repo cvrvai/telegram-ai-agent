@@ -1,0 +1,36 @@
+# Secrets & Environment Variables (CRITICAL: NEVER COMMIT)
+.env
+.env.local
+.env.*.local
+*.env
+
+# Telegram Client Login Sessions (CRITICAL: Contains Auth Tokens)
+*.session
+*.session-journal
+telegram_ai_session.session
+bot_listener_session.session
+
+# SQLite Databases (Local Message History)
+*.db
+*.sqlite
+*.sqlite3
+telegram_bot.db
+test_telegram.db
+
+# Python & Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
