@@ -57,6 +57,13 @@ class DigestEngine:
 
         return digest_text, stats
 
+    def _clean_summary(self, summary: str, chat_title: str) -> str:
+        s = summary.strip()
+        prefix = f"[{chat_title}]"
+        if s.startswith(prefix):
+            s = s[len(prefix):].strip()
+        return s
+
     def _format_digest_text(
         self,
         p0_p1: List[MessageRecord],
@@ -77,7 +84,7 @@ class DigestEngine:
             lines.append(f"🔴 <b>{len(p0_p1)} Priority Messages</b>\n")
             for idx, item in enumerate(p0_p1, start=1):
                 chat_title = html.escape(item.chat_title)
-                summary = html.escape(item.summary)
+                summary = html.escape(self._clean_summary(item.summary, item.chat_title))
                 sender = html.escape(item.sender_name)
 
                 lines.append(f"<b>{idx}. {chat_title}</b> <i>({sender})</i>")
@@ -101,7 +108,7 @@ class DigestEngine:
             lines.append(f"🟡 <b>{len(p2)} Important Updates</b>")
             for item in p2[:15]:  # Cap at 15 items to prevent oversized telegram messages
                 chat = html.escape(item.chat_title)
-                summary = html.escape(item.summary)
+                summary = html.escape(self._clean_summary(item.summary, item.chat_title))
                 lines.append(f"• <b>[{chat}]</b> {summary}")
             if len(p2) > 15:
                 lines.append(f"<i>... and {len(p2) - 15} more updates.</i>")
@@ -114,3 +121,4 @@ class DigestEngine:
         lines.append("<i>(greetings, memes, stickers, reactions, casual chat)</i>")
 
         return "\n".join(lines)
+
