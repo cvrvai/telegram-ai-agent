@@ -330,6 +330,74 @@ class Database:
 
 
 
+    async def get_active_groups(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Fetch active chats/groups with message and priority counts."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT
+                    chat_id,
+                    chat_title,
+                    chat_type,
+                    COUNT(*) as total_count,
+                    SUM(CASE WHEN priority IN ('P0', 'P1') THEN 1 ELSE 0 END) as priority_count,
+                    MAX(date) as last_activity
+                FROM messages
+                WHERE chat_title IS NOT NULL AND chat_title != ''
+                GROUP BY chat_id, chat_title, chat_type
+                ORDER BY last_activity DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_messages_for_chat(self, chat_id: int, limit: int = 15) -> List[MessageRecord]:
+        """Fetch recent messages for a specific chat/group."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT * FROM messages
+                WHERE chat_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (chat_id, limit),
+            )
+            rows = await cursor.fetchall()
+            return [
+                MessageRecord(
+                    id=row["id"],
+                    message_id=row["message_id"],
+                    chat_id=row["chat_id"],
+                    chat_title=row["chat_title"] or "Direct Message",
+                    chat_type=row["chat_type"] or "private",
+                    sender_id=row["sender_id"],
+                    sender_name=row["sender_name"] or "Unknown",
+                    sender_username=row["sender_username"],
+                    text=row["text"] or "",
+                    date=row["date"],
+                    media_type=row["media_type"],
+                    message_link=row["message_link"],
+                    priority=row["priority"],
+                    score=row["score"],
+                    reason=row["reason"] or "",
+                    needs_action=bool(row["needs_action"]),
+                    action=row["action"],
+                    deadline=row["deadline"],
+                    category=row["category"] or "general",
+                    summary=row["summary"] or "",
+                    is_prefiltered=bool(row["is_prefiltered"]),
+                    alert_sent=bool(row["alert_sent"]),
+                    digest_sent=bool(row["digest_sent"]),
+                    created_at=row["created_at"],
+                )
+                for row in rows
+            ]
+
     async def get_stats(self) -> Dict[str, Any]:
         """Fetch overall classification statistics."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -359,4 +427,5 @@ class Database:
                 "alerts_sent": row["alerts_sent"] or 0,
                 "pending_digest": row["pending_digest"] or 0,
             }
+
 

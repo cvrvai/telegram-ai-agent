@@ -239,15 +239,15 @@ class TelegramPriorityApp:
 
         # Menu Navigation Buttons
         def get_main_menu():
-
             return [
                 [Button.inline("🚨 P0 Urgent", data=b"tier_P0"),
                  Button.inline("🔴 P1 Important", data=b"tier_P1")],
                 [Button.inline("🟡 P2 Updates", data=b"tier_P2"),
                  Button.inline("🟢 P3 Chatter", data=b"tier_P3")],
-                [Button.inline("📋 Full Summary", data=b"btn_digest"),
-                 Button.inline("📊 Stats", data=b"btn_stats")],
-                [Button.inline("🔄 Refresh New Messages", data=b"btn_refresh")],
+                [Button.inline("👥 By Group / Chat", data=b"btn_groups"),
+                 Button.inline("📋 Full Summary", data=b"btn_digest")],
+                [Button.inline("📊 Stats", data=b"btn_stats"),
+                 Button.inline("🔄 Refresh Messages", data=b"btn_refresh")],
             ]
 
         def get_tier_menu(current_tier: str):
@@ -259,28 +259,51 @@ class TelegramPriorityApp:
                     Button.inline("🟢 P3" + (" ✓" if current_tier == "P3" else ""), data=b"tier_P3"),
                 ],
                 [
+                    Button.inline("👥 By Group", data=b"btn_groups"),
                     Button.inline("🔄 Refresh", data=f"tier_{current_tier}".encode()),
-                    Button.inline("📋 Summary", data=b"btn_digest"),
                     Button.inline("🏠 Main Menu", data=b"btn_menu"),
                 ],
             ]
+
+        def get_groups_menu(groups: list):
+            buttons = []
+            # Add up to 4 quick group drill-down buttons (2 per row)
+            row = []
+            for g in groups[:4]:
+                title = g.get("chat_title", "Chat")
+                short_title = (title[:14] + "..") if len(title) > 16 else title
+                row.append(Button.inline(f"💬 {short_title}", data=f"chat_{g['chat_id']}".encode()))
+                if len(row) == 2:
+                    buttons.append(row)
+                    row = []
+            if row:
+                buttons.append(row)
+
+            buttons.append([
+                Button.inline("🔄 Refresh Groups", data=b"btn_groups"),
+                Button.inline("📋 Full Summary", data=b"btn_digest"),
+                Button.inline("🏠 Main Menu", data=b"btn_menu"),
+            ])
+            return buttons
 
         def get_sub_menu():
             return [
                 [Button.inline("🚨 P0 Urgent", data=b"tier_P0"),
                  Button.inline("🔴 P1 Important", data=b"tier_P1")],
-                [Button.inline("🔄 Refresh", data=b"btn_digest"),
-                 Button.inline("🏠 Main Menu", data=b"btn_menu")],
+                [Button.inline("👥 By Group", data=b"btn_groups"),
+                 Button.inline("🔄 Refresh", data=b"btn_digest")],
+                [Button.inline("🏠 Main Menu", data=b"btn_menu")],
             ]
 
         welcome_text = (
             f"👋 <b>Hi {self.cfg.profile.user_name}!</b>\n\n"
             "Here is your personal message hub.\n"
-            "Tap any priority below to see your updates:\n\n"
+            "Tap any option below to see what arrived:\n\n"
             "• 🚨 <b>P0 Urgent:</b> Critical blockers & emergencies\n"
             "• 🔴 <b>P1 Important:</b> Deadlines & questions for you\n"
             "• 🟡 <b>P2 Updates:</b> Project progress & useful notes\n"
-            "• 🟢 <b>P3 Chatter:</b> Memes, greetings & casual chat\n\n"
+            "• 🟢 <b>P3 Chatter:</b> Memes, greetings & casual chat\n"
+            "• 👥 <b>By Group:</b> Summaries organized per Telegram group\n\n"
             "<i>💬 Or type any question below to ask AI!</i>"
         )
 
@@ -289,6 +312,85 @@ class TelegramPriorityApp:
                 await event.edit(text, parse_mode="HTML", buttons=buttons)
             except Exception:
                 await event.respond(text, parse_mode="HTML", buttons=buttons)
+
+        async def render_groups_view(event):
+            groups = await self.db.get_active_groups(limit=8)
+            if not groups:
+                text = (
+                    "👥 <b>Group & Chat Summaries</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    "🟢 <i>No group messages logged yet. Once messages arrive in your chats, summaries will appear here!</i>"
+                )
+                await safe_edit_or_respond(event, text, get_main_menu())
+                return
+
+            lines = [
+                "👥 <b>Summaries by Telegram Group</b>",
+                "━━━━━━━━━━━━━━━━━━━━━━\n",
+            ]
+
+            for g in groups:
+                chat_id = g["chat_id"]
+                chat_title = g.get("chat_title") or "Direct Message"
+                total = g.get("total_count", 0)
+                p_count = g.get("priority_count", 0)
+
+                badge = "🚨 " if p_count > 0 else "💬 "
+                lines.append(f"{badge}<b>{chat_title}</b> <i>({total} messages)</i>")
+
+                # Get latest 3 messages for this chat
+                chat_msgs = await self.db.get_messages_for_chat(chat_id, limit=3)
+                for m in chat_msgs:
+                    clean = m.summary
+                    prefix = f"[{m.chat_title}]"
+                    if clean.startswith(prefix):
+                        clean = clean[len(prefix):].strip()
+
+                    p_icon = "🔴 " if m.priority in ("P0", "P1") else ("🟡 " if m.priority == "P2" else "• ")
+                    lines.append(f"  {p_icon}{clean}")
+                    if m.needs_action and m.action:
+                        lines.append(f"    👉 <b>Action:</b> <u>{m.action}</u>")
+                    if m.deadline:
+                        lines.append(f"    ⏰ <b>Due:</b> <code>{m.deadline}</code>")
+
+                lines.append("")
+
+            await safe_edit_or_respond(event, "\n".join(lines), get_groups_menu(groups))
+
+        async def render_single_chat_view(event, chat_id: int):
+            records = await self.db.get_messages_for_chat(chat_id, limit=10)
+            if not records:
+                await safe_edit_or_respond(event, "🟢 No recent messages found for this chat.", get_main_menu())
+                return
+
+            chat_title = records[0].chat_title
+            lines = [
+                f"💬 <b>Chat: {chat_title}</b>",
+                "━━━━━━━━━━━━━━━━━━━━━━\n",
+            ]
+
+            for idx, r in enumerate(records, 1):
+                clean = r.summary
+                prefix = f"[{r.chat_title}]"
+                if clean.startswith(prefix):
+                    clean = clean[len(prefix):].strip()
+
+                lines.append(f"<b>{idx}. {r.sender_name}</b> [{r.priority}]")
+                lines.append(f"   {clean}")
+                if r.needs_action and r.action:
+                    lines.append(f"   👉 <b>Action:</b> <u>{r.action}</u>")
+                if r.deadline:
+                    lines.append(f"   ⏰ <b>Due:</b> <code>{r.deadline}</code>")
+                if r.message_link:
+                    lines.append(f"   🔗 <a href=\"{r.message_link}\">Open Message</a>")
+                lines.append("")
+
+            menu = [
+                [Button.inline("🔄 Refresh Chat", data=f"chat_{chat_id}".encode()),
+                 Button.inline("👥 All Groups", data=b"btn_groups")],
+                [Button.inline("🏠 Main Menu", data=b"btn_menu")],
+            ]
+            await safe_edit_or_respond(event, "\n".join(lines), menu)
 
         async def render_tier_view(event, tier: str):
             records = await self.db.get_messages_by_tier(tier, limit=10)
@@ -359,7 +461,12 @@ class TelegramPriorityApp:
                 await render_tier_view(event, "P3")
                 return
 
-            # 3. Instant Summary / Digest command
+            # 3. Group summary command
+            if text_lower in ("/groups", "groups", "group", "by group", "/group"):
+                await render_groups_view(event)
+                return
+
+            # 4. Instant Summary / Digest command
             if (
                 text_lower.startswith(("/digest", "/summary"))
                 or text in ("📋 Instant Digest", "digest", "summary", "summarize")
@@ -375,7 +482,7 @@ class TelegramPriorityApp:
                     )
                 return
 
-            # 4. Stats command
+            # 5. Stats command
             if text in ("📊 Today Stats", "stats", "/stats"):
                 stats = await self.db.get_stats()
                 stat_text = (
@@ -393,7 +500,7 @@ class TelegramPriorityApp:
                 await event.respond(stat_text, parse_mode="HTML", buttons=get_sub_menu())
                 return
 
-            # 5. Natural Language Conversational AI Q&A
+            # 6. Natural Language Conversational AI Q&A
             recent = await self.db.get_recent_messages(limit=35)
             answer = await self.classifier.answer_user_query(text, recent)
             await event.respond(answer, parse_mode="HTML", buttons=get_main_menu())
@@ -408,6 +515,17 @@ class TelegramPriorityApp:
                 tier = data.decode().split("_")[1]
                 await event.answer(f"Loading {tier}...")
                 await render_tier_view(event, tier)
+
+            # View summaries by group
+            elif data == b"btn_groups":
+                await event.answer("Loading group summaries...")
+                await render_groups_view(event)
+
+            # Drill down into a specific chat
+            elif data.startswith(b"chat_"):
+                chat_id = int(data.decode().split("_")[1])
+                await event.answer("Opening chat...")
+                await render_single_chat_view(event, chat_id)
 
             elif data in (b"btn_digest", b"btn_refresh"):
                 await event.answer("Updating summary...")
@@ -443,6 +561,7 @@ class TelegramPriorityApp:
                 await safe_edit_or_respond(event, welcome_text, get_main_menu())
 
         await bot_client.run_until_disconnected()
+
 
 
 
