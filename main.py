@@ -237,37 +237,51 @@ class TelegramPriorityApp:
         await bot_client.start(bot_token=self.cfg.telegram_bot_token)
         console.print("[bold green]✓ Interactive Bot Assistant started! You can now chat with your bot on Telegram.[/bold green]")
 
-        # Menu Keyboards
-        reply_keyboard = [
-            [Button.text("📋 Instant Digest", resize=True), Button.text("🔴 Priority Only", resize=True)],
-            [Button.text("📊 Today Stats", resize=True), Button.text("❓ Help", resize=True)],
-        ]
+        # Menu Navigation Buttons
+        def get_main_menu():
 
-        def get_inline_menu():
             return [
-                [Button.inline("📋 Generate Digest Now", data=b"btn_digest"),
-                 Button.inline("🔴 Priority Messages", data=b"btn_priority")],
-                [Button.inline("📊 System Stats", data=b"btn_stats"),
-                 Button.inline("🔄 Refresh Menu", data=b"btn_menu")],
+                [Button.inline("🚨 P0 Urgent", data=b"tier_P0"),
+                 Button.inline("🔴 P1 Important", data=b"tier_P1")],
+                [Button.inline("🟡 P2 Updates", data=b"tier_P2"),
+                 Button.inline("🟢 P3 Chatter", data=b"tier_P3")],
+                [Button.inline("📋 Full Summary", data=b"btn_digest"),
+                 Button.inline("📊 Stats", data=b"btn_stats")],
+                [Button.inline("🔄 Refresh New Messages", data=b"btn_refresh")],
+            ]
+
+        def get_tier_menu(current_tier: str):
+            return [
+                [
+                    Button.inline("🚨 P0" + (" ✓" if current_tier == "P0" else ""), data=b"tier_P0"),
+                    Button.inline("🔴 P1" + (" ✓" if current_tier == "P1" else ""), data=b"tier_P1"),
+                    Button.inline("🟡 P2" + (" ✓" if current_tier == "P2" else ""), data=b"tier_P2"),
+                    Button.inline("🟢 P3" + (" ✓" if current_tier == "P3" else ""), data=b"tier_P3"),
+                ],
+                [
+                    Button.inline("🔄 Refresh", data=f"tier_{current_tier}".encode()),
+                    Button.inline("📋 Summary", data=b"btn_digest"),
+                    Button.inline("🏠 Main Menu", data=b"btn_menu"),
+                ],
             ]
 
         def get_sub_menu():
             return [
-                [Button.inline("🔄 Refresh Digest", data=b"btn_digest"),
-                 Button.inline("🔴 Priority Items", data=b"btn_priority")],
-                [Button.inline("📊 Stats", data=b"btn_stats"),
-                 Button.inline("🔙 Main Menu", data=b"btn_menu")],
+                [Button.inline("🚨 P0 Urgent", data=b"tier_P0"),
+                 Button.inline("🔴 P1 Important", data=b"tier_P1")],
+                [Button.inline("🔄 Refresh", data=b"btn_digest"),
+                 Button.inline("🏠 Main Menu", data=b"btn_menu")],
             ]
 
         welcome_text = (
-            f"👋 <b>Hello {self.cfg.profile.user_name}!</b>\n\n"
-            "I am your <b>AI Priority Gatekeeper & Executive Assistant</b>.\n\n"
-            "• I monitor all your incoming chats in real-time.\n"
-            "• Urgent alerts (P0/P1) are sent to you immediately.\n"
-            "• All other updates are organized for scheduled digests.\n\n"
-            "<i>💡 Use the buttons below or ask me any question like:\n"
-            "\"What happened in CloudKH today?\"\n"
-            "\"Did anyone mention deadline?\"</i>"
+            f"👋 <b>Hi {self.cfg.profile.user_name}!</b>\n\n"
+            "Here is your personal message hub.\n"
+            "Tap any priority below to see your updates:\n\n"
+            "• 🚨 <b>P0 Urgent:</b> Critical blockers & emergencies\n"
+            "• 🔴 <b>P1 Important:</b> Deadlines & questions for you\n"
+            "• 🟡 <b>P2 Updates:</b> Project progress & useful notes\n"
+            "• 🟢 <b>P3 Chatter:</b> Memes, greetings & casual chat\n\n"
+            "<i>💬 Or type any question below to ask AI!</i>"
         )
 
         async def safe_edit_or_respond(event, text: str, buttons=None):
@@ -275,6 +289,41 @@ class TelegramPriorityApp:
                 await event.edit(text, parse_mode="HTML", buttons=buttons)
             except Exception:
                 await event.respond(text, parse_mode="HTML", buttons=buttons)
+
+        async def render_tier_view(event, tier: str):
+            records = await self.db.get_messages_by_tier(tier, limit=10)
+            tier_titles = {
+                "P0": ("🚨 <b>Urgent Messages (P0)</b>", "No urgent emergencies right now. All clear! 👍"),
+                "P1": ("🔴 <b>Important Messages (P1)</b>", "No pending important tasks or deadlines right now."),
+                "P2": ("🟡 <b>Useful Updates (P2)</b>", "No project updates or announcements logged yet."),
+                "P3": ("🟢 <b>Chatter & Low Priority (P3)</b>", "No casual messages or banter logged yet."),
+            }
+            title, empty_msg = tier_titles.get(tier, ("Messages", "No messages."))
+
+            if not records:
+                text = f"{title}\n━━━━━━━━━━━━━━━━━━━━━━\n\n🟢 <i>{empty_msg}</i>"
+                await safe_edit_or_respond(event, text, get_tier_menu(tier))
+                return
+
+            lines = [f"{title}", "━━━━━━━━━━━━━━━━━━━━━━\n"]
+            for idx, r in enumerate(records, 1):
+                clean_summary = r.summary
+                prefix = f"[{r.chat_title}]"
+                if clean_summary.startswith(prefix):
+                    clean_summary = clean_summary[len(prefix):].strip()
+
+                lines.append(f"<b>{idx}. {r.chat_title}</b> <i>({r.sender_name})</i>")
+                lines.append(f"   {clean_summary}")
+
+                if r.needs_action and r.action:
+                    lines.append(f"   👉 <b>Action:</b> <u>{r.action}</u>")
+                if r.deadline:
+                    lines.append(f"   ⏰ <b>Due:</b> <code>{r.deadline}</code>")
+                if r.message_link:
+                    lines.append(f"   🔗 <a href=\"{r.message_link}\">Open Chat</a>")
+                lines.append("")
+
+            await safe_edit_or_respond(event, "\n".join(lines), get_tier_menu(tier))
 
         @bot_client.on(events.NewMessage)
         async def on_bot_message(event):
@@ -292,11 +341,25 @@ class TelegramPriorityApp:
                 await event.respond(
                     welcome_text,
                     parse_mode="HTML",
-                    buttons=get_inline_menu(),
+                    buttons=get_main_menu(),
                 )
                 return
 
-            # 2. Instant Digest button/text
+            # 2. Priority check shortcuts
+            if "p0" in text_lower or "urgent" in text_lower or "emergency" in text_lower:
+                await render_tier_view(event, "P0")
+                return
+            if "p1" in text_lower or "important" in text_lower or "task" in text_lower:
+                await render_tier_view(event, "P1")
+                return
+            if "p2" in text_lower or "update" in text_lower:
+                await render_tier_view(event, "P2")
+                return
+            if "p3" in text_lower or "noise" in text_lower or "chatter" in text_lower:
+                await render_tier_view(event, "P3")
+                return
+
+            # 3. Instant Summary / Digest command
             if (
                 text_lower.startswith(("/digest", "/summary"))
                 or text in ("📋 Instant Digest", "digest", "summary", "summarize")
@@ -306,50 +369,26 @@ class TelegramPriorityApp:
                     await event.respond(digest_text, parse_mode="HTML", buttons=get_sub_menu())
                 else:
                     await event.respond(
-                        "✅ <b>All caught up!</b>\n\nNo unread or pending messages to summarize right now.",
+                        "✅ <b>All caught up!</b>\n\nNo unread messages to summarize right now.",
                         parse_mode="HTML",
-                        buttons=get_inline_menu(),
+                        buttons=get_main_menu(),
                     )
                 return
 
-            # 3. Priority Only button/text
-            if (
-                text_lower.startswith(("/priority", "/urgent"))
-                or text in ("🔴 Priority Only", "priority", "urgent", "alerts")
-            ):
-                records = await self.db.get_priority_messages(limit=10)
-                if not records:
-                    await event.respond("🟢 No urgent or priority messages currently logged.", parse_mode="HTML", buttons=get_inline_menu())
-                    return
-
-                lines = ["🔴 <b>Latest Priority Messages (P0/P1)</b>\n"]
-                for idx, r in enumerate(records, 1):
-                    lines.append(f"<b>{idx}. {r.chat_title}</b> ({r.sender_name})")
-                    lines.append(f"   {r.summary}")
-                    if r.needs_action and r.action:
-                        lines.append(f"   ⚡ <b>Action:</b> <u>{r.action}</u>")
-                    if r.deadline:
-                        lines.append(f"   ⏰ <b>Deadline:</b> <code>{r.deadline}</code>")
-                    if r.message_link:
-                        lines.append(f"   🔗 <a href=\"{r.message_link}\">Open Message</a>")
-                    lines.append("")
-                await event.respond("\n".join(lines), parse_mode="HTML", buttons=get_sub_menu())
-                return
-
-            # 4. Stats button/text
+            # 4. Stats command
             if text in ("📊 Today Stats", "stats", "/stats"):
                 stats = await self.db.get_stats()
                 stat_text = (
-                    "📊 <b>Telegram AI Filter Statistics</b>\n"
+                    "📊 <b>Quick Stats</b>\n"
                     "━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"• <b>Total Messages Ingested:</b> {stats.get('total_messages', 0)}\n"
-                    f"• <b>🔴 P0 Urgent:</b> {stats.get('p0_urgent', 0)}\n"
+                    f"• <b>Total Messages:</b> {stats.get('total_messages', 0)}\n"
+                    f"• <b>🚨 P0 Urgent:</b> {stats.get('p0_urgent', 0)}\n"
                     f"• <b>🔴 P1 Important:</b> {stats.get('p1_important', 0)}\n"
-                    f"• <b>🟡 P2 Useful Updates:</b> {stats.get('p2_useful', 0)}\n"
-                    f"• <b>🟢 P3 Filtered Noise:</b> {stats.get('p3_noise', 0)}\n"
-                    f"• <b>⚡ Action Items:</b> {stats.get('actions_needed', 0)}\n"
-                    f"• <b>🚨 Instant Alerts Sent:</b> {stats.get('alerts_sent', 0)}\n"
-                    f"• <b>⏳ Pending in Digest Queue:</b> {stats.get('pending_digest', 0)}\n"
+                    f"• <b>🟡 P2 Updates:</b> {stats.get('p2_useful', 0)}\n"
+                    f"• <b>🟢 P3 Chatter:</b> {stats.get('p3_noise', 0)}\n"
+                    f"• <b>⚡ Tasks Needed:</b> {stats.get('actions_needed', 0)}\n"
+                    f"• <b>🚨 Alerts Sent:</b> {stats.get('alerts_sent', 0)}\n"
+                    f"• <b>⏳ Pending Summary:</b> {stats.get('pending_digest', 0)}\n"
                 )
                 await event.respond(stat_text, parse_mode="HTML", buttons=get_sub_menu())
                 return
@@ -357,70 +396,54 @@ class TelegramPriorityApp:
             # 5. Natural Language Conversational AI Q&A
             recent = await self.db.get_recent_messages(limit=35)
             answer = await self.classifier.answer_user_query(text, recent)
-            await event.respond(answer, parse_mode="HTML", buttons=get_inline_menu())
+            await event.respond(answer, parse_mode="HTML", buttons=get_main_menu())
 
         # Callback queries for inline buttons - EDIT IN PLACE (NO SPAM)
         @bot_client.on(events.CallbackQuery)
         async def on_callback(event):
             data = event.data
 
-            if data == b"btn_digest":
-                await event.answer("Generating summary...")
+            # Check priority tier buttons (tier_P0, tier_P1, tier_P2, tier_P3)
+            if data.startswith(b"tier_"):
+                tier = data.decode().split("_")[1]
+                await event.answer(f"Loading {tier}...")
+                await render_tier_view(event, tier)
+
+            elif data in (b"btn_digest", b"btn_refresh"):
+                await event.answer("Updating summary...")
                 digest_text, stats = await self.digest_engine.generate_digest()
                 if digest_text:
                     await safe_edit_or_respond(event, digest_text, get_sub_menu())
                 else:
                     await safe_edit_or_respond(
                         event,
-                        "✅ <b>No pending messages!</b>\n\nYou are completely caught up right now.",
-                        get_inline_menu(),
+                        "✅ <b>All caught up!</b>\n\nNo unread messages to summarize right now.",
+                        get_main_menu(),
                     )
-
-            elif data == b"btn_priority":
-                await event.answer("Loading priority items...")
-                records = await self.db.get_priority_messages(limit=10)
-                if not records:
-                    await safe_edit_or_respond(
-                        event,
-                        "🟢 <b>No urgent or priority messages currently logged.</b>",
-                        get_inline_menu(),
-                    )
-                else:
-                    lines = ["🔴 <b>Latest Priority Messages (P0/P1)</b>\n"]
-                    for idx, r in enumerate(records, 1):
-                        lines.append(f"<b>{idx}. {r.chat_title}</b> ({r.sender_name})")
-                        lines.append(f"   {r.summary}")
-                        if r.needs_action and r.action:
-                            lines.append(f"   ⚡ <b>Action:</b> <u>{r.action}</u>")
-                        if r.deadline:
-                            lines.append(f"   ⏰ <b>Deadline:</b> <code>{r.deadline}</code>")
-                        if r.message_link:
-                            lines.append(f"   🔗 <a href=\"{r.message_link}\">Open Message</a>")
-                        lines.append("")
-                    await safe_edit_or_respond(event, "\n".join(lines), get_sub_menu())
 
             elif data == b"btn_stats":
                 await event.answer("Loading stats...")
                 stats = await self.db.get_stats()
                 stat_text = (
-                    "📊 <b>Telegram AI Filter Statistics</b>\n"
+                    "📊 <b>Quick Stats</b>\n"
                     "━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"• <b>Total Messages:</b> {stats.get('total_messages', 0)}\n"
-                    f"• <b>🔴 P0 Urgent:</b> {stats.get('p0_urgent', 0)}\n"
+                    f"• <b>🚨 P0 Urgent:</b> {stats.get('p0_urgent', 0)}\n"
                     f"• <b>🔴 P1 Important:</b> {stats.get('p1_important', 0)}\n"
-                    f"• <b>🟡 P2 Useful:</b> {stats.get('p2_useful', 0)}\n"
-                    f"• <b>🟢 P3 Noise:</b> {stats.get('p3_noise', 0)}\n"
-                    f"• <b>⚡ Action Items:</b> {stats.get('actions_needed', 0)}\n"
+                    f"• <b>🟡 P2 Updates:</b> {stats.get('p2_useful', 0)}\n"
+                    f"• <b>🟢 P3 Chatter:</b> {stats.get('p3_noise', 0)}\n"
+                    f"• <b>⚡ Tasks Needed:</b> {stats.get('actions_needed', 0)}\n"
                     f"• <b>🚨 Alerts Sent:</b> {stats.get('alerts_sent', 0)}\n"
-                    f"• <b>⏳ Pending Queue:</b> {stats.get('pending_digest', 0)}\n"
+                    f"• <b>⏳ Pending Summary:</b> {stats.get('pending_digest', 0)}\n"
                 )
                 await safe_edit_or_respond(event, stat_text, get_sub_menu())
 
             elif data == b"btn_menu":
                 await event.answer()
-                await safe_edit_or_respond(event, welcome_text, get_inline_menu())
+                await safe_edit_or_respond(event, welcome_text, get_main_menu())
 
         await bot_client.run_until_disconnected()
+
 
 
 

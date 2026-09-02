@@ -241,6 +241,50 @@ class Database:
                 for row in rows
             ]
 
+    async def get_messages_by_tier(self, tier: str, limit: int = 15) -> List[MessageRecord]:
+        """Fetch messages filtered by a specific priority tier (P0, P1, P2, P3)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT * FROM messages
+                WHERE priority = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (tier.upper(), limit),
+            )
+            rows = await cursor.fetchall()
+            return [
+                MessageRecord(
+                    id=row["id"],
+                    message_id=row["message_id"],
+                    chat_id=row["chat_id"],
+                    chat_title=row["chat_title"] or "Direct Message",
+                    chat_type=row["chat_type"] or "private",
+                    sender_id=row["sender_id"],
+                    sender_name=row["sender_name"] or "Unknown",
+                    sender_username=row["sender_username"],
+                    text=row["text"] or "",
+                    date=row["date"],
+                    media_type=row["media_type"],
+                    message_link=row["message_link"],
+                    priority=row["priority"],
+                    score=row["score"],
+                    reason=row["reason"] or "",
+                    needs_action=bool(row["needs_action"]),
+                    action=row["action"],
+                    deadline=row["deadline"],
+                    category=row["category"] or "general",
+                    summary=row["summary"] or "",
+                    is_prefiltered=bool(row["is_prefiltered"]),
+                    alert_sent=bool(row["alert_sent"]),
+                    digest_sent=bool(row["digest_sent"]),
+                    created_at=row["created_at"],
+                )
+                for row in rows
+            ]
+
     async def get_recent_messages(self, limit: int = 40) -> List[MessageRecord]:
         """Fetch most recent messages for conversational AI Q&A."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -283,6 +327,8 @@ class Database:
                 )
                 for row in rows
             ]
+
+
 
     async def get_stats(self) -> Dict[str, Any]:
         """Fetch overall classification statistics."""
