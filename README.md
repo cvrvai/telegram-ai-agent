@@ -1,6 +1,6 @@
 # 🤖 Telegram AI Priority Filter & Digest Bot
 
-> **An intelligent, context-aware Telegram notification gatekeeper and periodic digest assistant powered by Google Gemini and Ollama.**
+> **An intelligent, context-aware Telegram notification gatekeeper and periodic digest assistant powered by Ollama.**
 
 ```text
 Incoming Telegram Messages (DMs, Groups, Channels)
@@ -33,7 +33,7 @@ Instant Telegram Push Alert     Periodic 3-Tier Digest
   - `[ 📊 System Stats ]`
 - 💬 **Ask AI About Your Chats:** Type any question to your bot (e.g. *"What did my lecturer announce today?"* or *"Any updates on CloudKH?"*) and get instant answers based on captured message context.
 - 📎 **Business Documents:** Analyze PDF, TXT, CSV, JSON, YAML, XLSX, XLS, and common image files through the configured AI provider.
-- 🔌 **Multi-Model Support:** Native integration with **Google Gemini** (`gemini-3.6-flash`) and local/remote **Ollama**.
+- 🔌 **Ollama AI:** Uses Ollama's OpenAI-compatible API for local models and Ollama Cloud models.
 
 ---
 
@@ -70,9 +70,9 @@ You only need **3 things** to configure:
 3. Open [`@userinfobot`](https://t.me/userinfobot) to get your personal **Chat ID** (e.g., `1265124779`).
 4. **Important:** Open a direct message with your new bot and click **Start**!
 
-#### C. AI API Key (Google Gemini - Free)
-1. Get a free API key from [Google AI Studio](https://aistudio.google.com).
-2. (Optional: You can also use local [Ollama](https://ollama.com)).
+#### C. Ollama (local or Cloud)
+1. Choose a local Ollama model or create an API key at [Ollama Keys](https://ollama.com/settings/keys) for Ollama Cloud.
+2. Use an Ollama model available to your account, such as `gpt-oss:120b` for direct Cloud API access.
 
 ---
 
@@ -95,10 +95,11 @@ TELEGRAM_PHONE=+855XXXXXXXX
 TELEGRAM_BOT_TOKEN=8710137004:AAFX...
 NOTIFICATION_CHAT_ID=1265124779
 
-# 3. AI Provider (Google Gemini)
-AI_PROVIDER=gemini
-GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_MODEL=gemini-3.6-flash
+# 3. AI Provider (Ollama)
+AI_PROVIDER=ollama
+OLLAMA_BASE_URL=https://ollama.com/v1
+OLLAMA_MODEL=gpt-oss:120b
+OLLAMA_API_KEY=your_ollama_api_key_here
 
 # 4. Priority & Alert Rules
 URGENT_SCORE_THRESHOLD=90
@@ -216,15 +217,15 @@ important_projects:
 ```text
 ├── config.py              # Configuration manager & YAML loader
 ├── user_profile.yaml      # Personalized user priority rules
-├── models.py              # Pydantic schemas (Classification, Messages, Digests)
-├── database.py            # Legacy SQLite importer/test compatibility engine
-├── prefilter.py           # Zero-token rule pre-filter
-├── classifier.py          # AI priority classifier (Gemini / Ollama / OpenAI)
-├── notifier.py            # Telegram alert dispatcher & HTML formatter
-├── digest.py              # 3-Tier periodic digest aggregation engine
-├── scheduler.py           # APScheduler background digest timer
+├── app/core/models.py     # Pydantic message and digest schemas
+├── app/storage/sqlite_messages.py # SQLite migration/test compatibility engine
+├── app/priority/prefilter.py # Zero-token rule pre-filter
+├── app/priority/classifier.py # AI priority classifier
+├── app/telegram/notifier.py # Telegram alert dispatcher
+├── app/priority/digest.py # 3-Tier periodic digest aggregation engine
+├── app/telegram/scheduler.py # APScheduler background digest timer
 ├── main.py                # Main CLI daemon & interactive Telegram Bot
-├── test_classifier.py     # Comprehensive test suite
+├── tests/                 # Unit and compatibility tests
 └── pyproject.toml         # Dependencies and metadata
 ```
 
@@ -234,7 +235,11 @@ The maintainable business features live under [`app/`](app/):
 
 ```text
 app/
-├── ai/          # Gemini and compatible provider adapters
+├── agent/       # Bounded decision runtime, policy, context, and tools
+├── core/        # Shared domain schemas
+├── priority/    # Message filtering, classification, and digests
+├── telegram/    # Telegram delivery and scheduling adapters
+├── ai/          # Ollama-compatible provider adapter
 ├── assistants/  # Assistant profiles and routing
 ├── content/     # Bounded text, PDF, and image handling
 ├── dashboard/   # Authenticated dashboard data services
@@ -247,7 +252,13 @@ app/
 
 Telegram handlers translate events into `app.services` use cases. Providers never decide access, storage never sends messages, and every AI operation is recorded against the shared budget. See [`docs/architecture.md`](docs/architecture.md) and [`docs/client-video-feature-scope.md`](docs/client-video-feature-scope.md) for the delivery phases.
 
-For the business assistant, set `AI_PROVIDER=gemini`, provide `GEMINI_API_KEY`, and choose `GEMINI_MODEL=gemini-3.6-flash`. Set `OWNER_USER_ID` to the administrator's Telegram user ID; optionally provide comma-separated `APPROVED_USER_IDS` and `APPROVED_GROUP_IDS`. `AI_MONTHLY_BUDGET_USD` defaults to `20.0`.
+For the business assistant, set `AI_PROVIDER=ollama`, provide `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, and `OLLAMA_API_KEY`. Set `OWNER_USER_ID` to the administrator's Telegram user ID; optionally provide comma-separated `APPROVED_USER_IDS` and `APPROVED_GROUP_IDS`. `AI_MONTHLY_BUDGET_USD` defaults to `20.0`.
+
+To use Ollama Cloud directly, create an API key at [Ollama Keys](https://ollama.com/settings/keys) and set `AI_PROVIDER=ollama`, `OLLAMA_BASE_URL=https://ollama.com/v1`, `OLLAMA_MODEL` to a model available in your Ollama account (for example `gpt-oss:120b`), and `OLLAMA_API_KEY` to the key. Keep the key in `.env`, which is ignored by Git. If Ollama is running locally on the Windows host while this bot runs in Docker, use `OLLAMA_BASE_URL=http://host.docker.internal:11434/v1` and sign in locally with `ollama signin`; the bot container should not use `localhost` for the host service.
+
+`AI_REQUEST_TIMEOUT_SECONDS` defaults to `120` to give Cloud models enough time to respond. Direct Cloud API calls use models such as `gpt-oss:120b`; names ending in `:cloud` are used when a local Ollama installation offloads the model to Cloud.
+
+Natural-language messages use the bounded work-management agent described in [docs/agent-architecture.md](docs/agent-architecture.md). It reads only owner-selected Telegram chats and can use the existing project/work-item service through typed, policy-checked tools. Creation and destructive or domain-specific inventory/sales actions remain outside this first slice.
 
 Telegram business commands include `/setup`, `/setup search NAME`, `/setup user TELEGRAM_USER_ID`, `/department`, `/departments`, `/project`, `/projects`, `/ptask`, `/assign`, `/status`, `/dep`, `/milestone`, `/comment`, `/plan` (CPM), `/task`, `/tasks`, `/done`, `/remind`, `/reminders`, `/web URL [question]`, `/draft CHAT_ID message`, `/email recipient | subject | message`, `/event start | title | optional end`, `/assistant [id]`, `/memory [search]`, `/new`, `/forget all`, and `/integrations`. Outbound drafts always wait for an owner approval button before delivery. `/web` is read-only and limited to public HTTP(S) sources.
 

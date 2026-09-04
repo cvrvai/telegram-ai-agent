@@ -636,10 +636,21 @@ class BusinessRepository:
             cursor = await db.execute("SELECT id,project_key,name,description,status,start_date,target_date,created_at,updated_at,next_sequence FROM assistant_projects WHERE user_id=? OR id IN (SELECT project_id FROM assistant_project_members WHERE user_id=?) ORDER BY updated_at DESC LIMIT ?", (user_id, user_id, limit))
             return [dict(row) for row in await cursor.fetchall()]
 
-    async def get_work_item(self, user_id: int, item_id: int) -> Optional[Dict[str, Any]]:
+    async def get_project(self, user_id: int, project_id: Any) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            row = await (await db.execute("SELECT * FROM assistant_tasks WHERE id=? AND (user_id=? OR assignee_id=? OR project_id IN (SELECT project_id FROM assistant_project_members WHERE user_id=?))", (item_id, user_id, user_id, user_id))).fetchone()
+            row = await (await db.execute("SELECT * FROM assistant_projects WHERE id=? AND (user_id=? OR id IN (SELECT project_id FROM assistant_project_members WHERE user_id=?))", (project_id, user_id, user_id))).fetchone()
+            return dict(row) if row else None
+
+    async def find_projects(self, user_id: int, hint: str, limit: int = 10) -> List[Dict[str, Any]]:
+        rows = await self.list_projects(user_id, 100)
+        needle = (hint or "").casefold()
+        return [row for row in rows if needle in str(row.get("name", "")).casefold() or needle in str(row.get("project_key", "")).casefold()][:limit]
+
+    async def get_work_item(self, user_id: int, item_id: Any) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute("SELECT * FROM assistant_tasks WHERE (id=? OR display_key=?) AND (user_id=? OR assignee_id=? OR project_id IN (SELECT project_id FROM assistant_project_members WHERE user_id=?))", (item_id, str(item_id), user_id, user_id, user_id))).fetchone()
             return dict(row) if row else None
 
     async def list_work_items(self, user_id: int, status: str = "all", limit: int = 50, offset: int = 0, project_id: Optional[int] = None, assignee_id: Optional[int] = None, due_before: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -668,6 +679,10 @@ class BusinessRepository:
         if not fields:
             return False
         async with aiosqlite.connect(self.db_path) as db:
+            resolved = await (await db.execute("SELECT id FROM assistant_tasks WHERE (id=? OR display_key=?) AND (user_id=? OR assignee_id=?)", (task_id, str(task_id), user_id, user_id))).fetchone()
+            if not resolved:
+                return False
+            task_id = int(resolved[0])
             if status:
                 row = await (await db.execute("SELECT status FROM assistant_tasks WHERE id=? AND (user_id=? OR assignee_id=?)", (task_id, user_id, user_id))).fetchone()
                 if not row:
@@ -681,6 +696,12 @@ class BusinessRepository:
                 await db.execute("INSERT INTO work_item_status_history(work_item_id,from_status,to_status,changed_by,created_at) VALUES (?,?,?,?,?)", (task_id, old_status, status, user_id, _now()))
             await db.commit()
             return cursor.rowcount == 1
+
+    async def record_agent_audit(self, *, actor_id: int, tool_name: str, arguments_summary: Dict[str, Any], policy_result: str, execution_result: Any = None, target: Any = None) -> None:
+        import json
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("INSERT INTO agent_audit_events(actor_id,tool_name,arguments, target,policy_result,execution_result,created_at) VALUES (?,?,?,?,?,?,?)", (actor_id, tool_name, json.dumps(arguments_summary, default=str), str(target) if target is not None else None, policy_result, json.dumps(execution_result, default=str), _now()))
+            await db.commit()
 
     async def add_dependency(self, task_id: int, predecessor_id: int) -> None:
         async with aiosqlite.connect(self.db_path) as db:

@@ -5,8 +5,8 @@ import unittest
 
 from app.projects.workflow import can_transition, validate_priority
 from app.storage.business import BusinessRepository
-from classifier import AIClassifier
-from models import IncomingMessage
+from app.priority.classifier import AIClassifier
+from app.core.models import IncomingMessage
 
 
 class WorkManagementTests(unittest.IsolatedAsyncioTestCase):
@@ -54,3 +54,5 @@ class WorkManagementTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+

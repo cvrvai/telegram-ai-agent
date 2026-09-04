@@ -148,6 +148,14 @@ class AssistantService:
         self._check(user_id, chat_id, chat_type)
         return await self.repository.list_projects(user_id)
 
+    async def get_project(self, user_id: int, chat_id: int, chat_type: str, project_id: Any):
+        self._check(user_id, chat_id, chat_type)
+        return await self.repository.get_project(user_id, project_id)
+
+    async def find_projects(self, user_id: int, chat_id: int, chat_type: str, hint: str):
+        self._check(user_id, chat_id, chat_type)
+        return await self.repository.find_projects(user_id, hint)
+
     async def create_project_task(self, user_id: int, chat_id: int, chat_type: str, project_id: Any, title: str, duration_days: int = 1, assignee_id: int | None = None, priority: str = "P2", due_at: str | None = None, item_type: str = "task", parent_id: Any = None):
         self._check(user_id, chat_id, chat_type)
         return await self.repository.create_task(user_id, title, project_id=project_id, assignee_id=assignee_id, priority=validate_priority(priority), duration_days=duration_days, due_at=due_at, item_type=validate_work_item_type(item_type), parent_id=parent_id, reporter_id=user_id)

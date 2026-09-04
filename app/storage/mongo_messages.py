@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from typing import Any, Dict, List, Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
-from models import DigestStats, IncomingMessage, MessageRecord, PriorityClassification
+from app.core.models import DigestStats, IncomingMessage, MessageRecord, PriorityClassification
 
 
 class MongoMessageDatabase:
@@ -172,6 +173,14 @@ class MongoMessageDatabase:
         cursor = self.messages.find(query).sort("id", -1).limit(limit)
         rows = [self._record(doc) async for doc in cursor]
         return rows
+
+    async def search_messages(self, query_text: str, limit: int = 20, allowed_chat_ids: Optional[set[int]] = None) -> List[MessageRecord]:
+        safe_query = re.escape(str(query_text or "")[:200])
+        query: Dict[str, Any] = {"$or": [{"text": {"$regex": safe_query, "$options": "i"}}, {"summary": {"$regex": safe_query, "$options": "i"}}, {"chat_title": {"$regex": safe_query, "$options": "i"}}]}
+        if allowed_chat_ids is not None:
+            query["chat_id"] = {"$in": [int(chat_id) for chat_id in allowed_chat_ids]}
+        cursor = self.messages.find(query).sort("id", -1).limit(limit)
+        return [self._record(doc) async for doc in cursor]
 
     async def get_active_groups(self, limit: int = 10, allowed_chat_ids: Optional[set[int]] = None) -> List[Dict[str, Any]]:
         match: Dict[str, Any] = {"chat_title": {"$nin": [None, ""]}}

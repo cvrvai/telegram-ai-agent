@@ -134,11 +134,26 @@ async def migration_0004_status_history(db: aiosqlite.Connection) -> None:
     await db.execute("CREATE INDEX IF NOT EXISTS idx_work_item_history_item ON work_item_status_history(work_item_id, created_at)")
 
 
+async def migration_0005_agent_audit(db: aiosqlite.Connection) -> None:
+    await db.execute("""CREATE TABLE IF NOT EXISTS agent_audit_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_id INTEGER NOT NULL,
+        tool_name TEXT NOT NULL,
+        arguments TEXT NOT NULL,
+        target TEXT,
+        policy_result TEXT NOT NULL,
+        execution_result TEXT,
+        created_at TEXT NOT NULL
+    )""")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_agent_audit_actor_time ON agent_audit_events(actor_id, created_at)")
+
+
 MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (1, "existing baseline", migration_0001_baseline),
     (2, "work item domain", migration_0002_work_item_domain),
     (3, "project keys", migration_0003_project_keys),
     (4, "status history", migration_0004_status_history),
+    (5, "agent audit", migration_0005_agent_audit),
 )
 
 

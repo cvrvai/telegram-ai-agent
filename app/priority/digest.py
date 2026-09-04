@@ -5,8 +5,8 @@ from __future__ import annotations
 import html
 from datetime import datetime
 from typing import List, Optional, Tuple
-from database import Database
-from models import MessageRecord, DigestStats
+from app.storage.sqlite_messages import Database
+from app.core.models import MessageRecord, DigestStats
 
 
 class DigestEngine:
@@ -121,3 +121,5 @@ class DigestEngine:
         lines.append("<i>(greetings, memes, stickers, reactions, casual chat)</i>")
 
         return "\n".join(lines)
+
+

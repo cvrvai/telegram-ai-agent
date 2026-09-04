@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Optional, Tuple
-from models import IncomingMessage, PriorityClassification
+from app.core.models import IncomingMessage, PriorityClassification
 
 # Common trivial responses and chatter (in English and common transliterations)
 NOISE_PATTERNS = {
@@ -94,3 +94,5 @@ def evaluate_prefilter(msg: IncomingMessage, vip_senders: list[str]) -> Optional
 
     # If none of the fast filters match, message requires AI classification
     return None
+
+

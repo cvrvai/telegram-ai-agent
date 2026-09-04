@@ -1,9 +1,8 @@
 """MongoDB-backed business-assistant storage.
 
-The legacy Telegram message tables remain in SQLite for now. This repository
-implements the same small interface used by the business assistant, so MongoDB
-can be enabled for conversations, access requests, profiles, and AI usage
-without changing Telegram handlers.
+This repository implements the transport-independent business service contract
+for conversations, access, projects, work items, and AI usage. SQLite remains
+only as a migration and test compatibility adapter.
 """
 
 from __future__ import annotations
@@ -46,6 +45,7 @@ class MongoBusinessRepository:
         self.milestones = self.db["assistant_milestones"]
         self.comments = self.db["assistant_task_comments"]
         self.status_history = self.db["work_item_status_history"]
+        self.agent_audits = self.db["agent_audit_events"]
 
     async def init(self) -> None:
         """Verify connectivity and create the indexes used by the service."""
@@ -68,6 +68,7 @@ class MongoBusinessRepository:
         await self.tasks.create_index([("project_id", 1), ("status", 1)])
         await self.tasks.create_index("display_key", unique=True, sparse=True)
         await self.status_history.create_index([("work_item_id", 1), ("created_at", 1)])
+        await self.agent_audits.create_index([("actor_id", 1), ("created_at", -1)])
         await self.profiles.update_one(
             {"assistant_id": "business"},
             {
@@ -304,8 +305,9 @@ class MongoBusinessRepository:
     async def _find_task(self, task_id: Any) -> Optional[Dict[str, Any]]:
         from bson import ObjectId
         try: key: Any = ObjectId(str(task_id))
-        except Exception: key = task_id
-        return await self.tasks.find_one({"_id": key})
+        except Exception: key = None
+        query = {"_id": key} if key is not None else {"display_key": str(task_id)}
+        return await self.tasks.find_one(query)
 
     async def _project_for_user(self, user_id: int, project_id: Any) -> Optional[Dict[str, Any]]:
         from bson import ObjectId
@@ -324,11 +326,9 @@ class MongoBusinessRepository:
         return rows[offset:offset + limit]
 
     async def complete_task(self, user_id: int, task_id: str) -> bool:
-        from bson import ObjectId
-        try:
-            key: Any = ObjectId(task_id)
-        except Exception:
-            key = task_id
+        row = await self._find_task(task_id)
+        if not row or (row.get("user_id") != user_id and row.get("assignee_id") != user_id): return False
+        key = row["_id"]
         result = await self.tasks.update_one({"$or": [{"user_id": user_id}, {"assignee_id": user_id}], "status": {"$in": ["open", "to_do", "todo", "in_progress", "blocked", "waiting", "review"]}, "_id": key}, {"$set": {"status": "done", "completed_at": _now(), "updated_at": _now()}})
         return result.modified_count == 1
 
@@ -497,13 +497,26 @@ class MongoBusinessRepository:
         for row in rows: row["id"] = str(row.pop("_id"))
         return rows
 
+    async def get_project(self, user_id: int, project_id: Any) -> Optional[Dict[str, Any]]:
+        from bson import ObjectId
+        try: key: Any = ObjectId(str(project_id))
+        except Exception: key = project_id
+        row = await self.projects.find_one({"_id": key, "$or": [{"user_id": user_id}, {"_id": {"$in": await self.project_members.distinct("project_id", {"user_id": user_id})}}]})
+        if not row: return None
+        row["id"] = str(row.pop("_id")); return row
+
+    async def find_projects(self, user_id: int, hint: str, limit: int = 10) -> List[Dict[str, Any]]:
+        rows = await self.list_projects(user_id, 100)
+        needle = (hint or "").casefold()
+        return [row for row in rows if needle in str(row.get("name", "")).casefold() or needle in str(row.get("project_key", "")).casefold()][:limit]
+
     async def add_project_member(self, project_id: Any, user_id: int, role: str = "member") -> None:
         await self.project_members.update_one({"project_id": project_id, "user_id": user_id}, {"$set": {"role": role}}, upsert=True)
 
     async def update_task(self, user_id: int, task_id: str, status: Optional[str] = None, assignee_id: Optional[int] = None, priority: Optional[str] = None, due_at: Optional[str] = None) -> bool:
-        from bson import ObjectId
-        try: key: Any = ObjectId(task_id)
-        except Exception: key = task_id
+        row = await self._find_task(task_id)
+        if not row or (row.get("user_id") != user_id and row.get("assignee_id") != user_id): return False
+        key = row["_id"]
         previous_status = None
         if status is not None:
             status = normalize_status(status)
@@ -518,6 +531,17 @@ class MongoBusinessRepository:
         if result.modified_count == 1 and status is not None and previous_status != status:
             await self.status_history.insert_one({"work_item_id": str(task_id), "from_status": previous_status, "to_status": status, "changed_by": user_id, "created_at": _now()})
         return result.modified_count == 1
+
+    async def record_agent_audit(self, *, actor_id: int, tool_name: str, arguments_summary: Dict[str, Any], policy_result: str, execution_result: Any = None, target: Any = None) -> None:
+        await self.agent_audits.insert_one({
+            "actor_id": int(actor_id),
+            "tool_name": tool_name,
+            "arguments": arguments_summary,
+            "target": target,
+            "policy_result": policy_result,
+            "execution_result": execution_result,
+            "created_at": _now(),
+        })
 
     async def add_dependency(self, task_id: Any, predecessor_id: Any) -> None:
         await self.dependencies.update_one({"task_id": task_id, "predecessor_id": predecessor_id}, {"$set": {"task_id": task_id, "predecessor_id": predecessor_id}}, upsert=True)

@@ -74,7 +74,7 @@ These controls are planned features. They are not present in the current applica
 
 ## Other APIs
 
-The initial business scope does not require a second paid AI provider. Existing Gemini/Ollama integrations may remain available in the code, but this cost baseline assumes Sonnet usage only. A different provider or model needs its own measured estimate.
+The initial business scope uses Ollama local or Ollama Cloud as the AI provider. Cloud usage and any account plan limits should be measured from the Ollama account; local inference has no per-token provider charge but still uses host resources.
 
 Paid web search, voice services, and external business integrations are outside the initial scope and outside the examples above. Price them separately if added. The planned dashboard, access rules, routing, and approval controls do not inherently require a separate paid AI API.
 

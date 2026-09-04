@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 from typing import List, Optional, Dict, Any
-from models import MessageRecord, DigestStats, PriorityClassification, IncomingMessage
+from app.core.models import MessageRecord, DigestStats, PriorityClassification, IncomingMessage
 
 
 def _chat_scope(allowed_chat_ids: Optional[set[int]], prefix: str = " AND ") -> tuple[str, list[int]]:
@@ -461,3 +461,5 @@ class Database:
                 "alerts_sent": row["alerts_sent"] or 0,
                 "pending_digest": row["pending_digest"] or 0,
             }
+
+

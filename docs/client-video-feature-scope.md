@@ -10,7 +10,7 @@ The [reference video](https://www.youtube.com/watch?v=z3NhRgiItwQ) informs the T
 
 | Feature | Business behavior | Existing foundation | Work required |
 | --- | --- | --- | --- |
-| 1. Private AI chat | Answer business questions, draft replies, and explain supplied information. | Persistent scoped conversations, history search, Gemini/Ollama providers, and budget controls. | Configure the selected provider key/model. |
+| 1. Private AI chat | Answer business questions, draft replies, and explain supplied information. | Persistent scoped conversations, history search, Ollama local/Cloud provider, and budget controls. | Configure the Ollama endpoint, model, and key. |
 | 2. Group assistance | Respond to mentions, replies, and configured trigger phrases in approved groups. Keep routine group conversation quiet unless a response rule applies. | Group ingestion exists; interactive answers are private-only. | Add group activation, sender permissions, trigger settings, and replies to the correct conversation. |
 | 3. Important-message alerts | Flag urgent requests, deadlines, and items needing attention, with a short reason and a source link where available. | Priority classifier, noise filter, and notifications exist. | Replace personal/university defaults with configurable business rules; select monitored sources and authorized alert recipients. |
 | 4. Scheduled and on-demand summaries | Present decisions, pending requests, action items, and stated deadlines from selected conversations. Let the administrator set times and destinations. | Scheduled/manual digests assemble stored classifications. | Add summaries across messages where useful; scope results by recipient and distinguish stated facts from inference. Preserve a low-cost digest assembled from existing records. |
@@ -77,9 +77,9 @@ These findings come from static inspection, not a live integration test.
 | Area | Files | Required change |
 | --- | --- | --- |
 | Message intake and interaction | `main.py` | Separate intake, commands, conversations, and callbacks. Check identity and permissions before fetching data or performing actions. Add group routing and per-bot state. |
-| Priority and answer generation | `classifier.py`, `prefilter.py` | Preserve filtering/classification; add a shared model interface for classification, chat, documents, and summaries with usage reporting. Current Q&A takes a different provider path from classification. |
-| Storage | `database.py`, `models.py` | Migrate existing records safely; add users, assistants, memberships, scoped conversations, files, approval records, and AI usage. Introduce scoped retrieval instead of global recent-message queries. |
-| Alerts and digests | `notifier.py`, `digest.py`, `scheduler.py` | Apply recipient/source permissions, configurable destinations, and delivery tracking. Mark scheduled delivery complete only after successful delivery. |
+| Priority and answer generation | `app/priority/classifier.py`, `app/priority/prefilter.py` | Preserve filtering/classification; add a shared model interface for classification, chat, documents, and summaries with usage reporting. Current Q&A takes a different provider path from classification. |
+| Storage | `app/storage/sqlite_messages.py`, `app/core/models.py` | Migrate existing records safely; add users, assistants, memberships, scoped conversations, files, approval records, and AI usage. Introduce scoped retrieval instead of global recent-message queries. |
+| Alerts and digests | `app/telegram/notifier.py`, `app/priority/digest.py`, `app/telegram/scheduler.py` | Apply recipient/source permissions, configurable destinations, and delivery tracking. Mark scheduled delivery complete only after successful delivery. |
 | Configuration | `config.py`, `user_profile.yaml` | Add business profiles and validated assistant/group/budget settings. Keep secrets outside public responses and dashboard output. |
 | Administration | New dashboard and management routes | Use the same authorization and settings services as Telegram; show runtime status separately from configured credentials. |
 

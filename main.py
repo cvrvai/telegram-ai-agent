@@ -28,19 +28,21 @@ from rich.table import Table
 from rich.panel import Panel
 
 from config import config
-from models import IncomingMessage, PriorityClassification
-from prefilter import evaluate_prefilter
-from classifier import AIClassifier
-from notifier import Notifier
-from digest import DigestEngine
-from scheduler import DigestScheduler
-from app.ai.provider import GeminiProvider, OpenAICompatibleProvider
+from app.core.models import IncomingMessage, PriorityClassification
+from app.priority.prefilter import evaluate_prefilter
+from app.priority.classifier import AIClassifier
+from app.telegram.notifier import Notifier
+from app.priority.digest import DigestEngine
+from app.telegram.scheduler import DigestScheduler
+from app.ai.provider import OpenAICompatibleProvider
 from app.security.access import AccessController
 from app.services.assistant import AssistantService
 from app.bot.navigation import route, parse
 from app.usage.budget import UsageBudget, BudgetExceeded
 from app.dashboard.http import DashboardServer
 from app.integrations import IntegrationHub
+from app.agent.runtime import AgentRuntime
+from app.agent.tools import build_registry
 
 # Setup rich console and logging
 console = Console(force_terminal=True, legacy_windows=False)
@@ -73,6 +75,9 @@ class TelegramPriorityApp:
         self._focus_settings: dict[int, dict] = {}
         self._setup_state: dict[int, dict] = {}
         self._pm_state: dict[int, dict] = {}
+        # Explicit, owner-approved requests to read a chat outside the saved
+        # monitoring scope. Entries are removed after a one-time request.
+        self._pending_access_requests: dict[tuple[int, int], dict] = {}
         # Business-assistant services are transport independent. Telegram
         # handlers below only translate events into this use case.
         from app.storage.mongo import MongoBusinessRepository
@@ -87,23 +92,16 @@ class TelegramPriorityApp:
             {"email": self.cfg.email_webhook_url, "calendar": self.cfg.calendar_webhook_url, "crm": self.cfg.crm_webhook_url, "task": self.cfg.task_webhook_url},
             self.cfg.integration_secret,
         )
-        if self.cfg.ai_provider.lower() == "gemini":
-            business_provider = GeminiProvider(self.cfg.gemini_api_key, self.cfg.effective_gemini_model)
-            input_rate = self.cfg.ai_input_price_per_million
-            output_rate = self.cfg.ai_output_price_per_million
-        elif self.cfg.ai_provider.lower() == "ollama":
-            business_provider = OpenAICompatibleProvider(
-                self.cfg.ollama_base_url,
-                self.cfg.ollama_api_key,
-                self.cfg.ollama_model,
-            )
-            input_rate = output_rate = 0.0
-        else:
-            # Unknown providers remain unavailable to this new service until
-            # a provider adapter and its billing rates are explicitly added.
-            business_provider = GeminiProvider(None)
-            input_rate = self.cfg.ai_input_price_per_million
-            output_rate = self.cfg.ai_output_price_per_million
+        if self.cfg.ai_provider.lower() != "ollama":
+            raise RuntimeError("Only Ollama is supported. Set AI_PROVIDER=ollama and configure OLLAMA_BASE_URL, OLLAMA_MODEL, and OLLAMA_API_KEY.")
+        business_provider = OpenAICompatibleProvider(
+            self.cfg.ollama_base_url,
+            self.cfg.ollama_api_key,
+            self.cfg.ollama_model,
+            timeout_seconds=self.cfg.ai_request_timeout_seconds,
+        )
+        input_rate = output_rate = 0.0
+        self.business_provider = business_provider
         self.business_assistant = AssistantService(
             self.business_repository,
             self.business_access,
@@ -127,7 +125,7 @@ class TelegramPriorityApp:
                     input_price_per_million=input_rate,
                     output_price_per_million=output_rate,
                 )
-        selected_model = self.cfg.effective_gemini_model if self.cfg.ai_provider.lower() == "gemini" else self.cfg.ai_provider
+        selected_model = self.cfg.ollama_model
         logger.info("Business AI provider: %s | model: %s", self.cfg.ai_provider, selected_model)
         logger.info(
             "Business access owner: %s | approved users: %d | approved groups: %d",
@@ -135,8 +133,6 @@ class TelegramPriorityApp:
             len(self.business_access.approved_users),
             len(self.business_access.approved_groups),
         )
-        if self.cfg.ai_provider.lower() == "gemini" and not business_provider.available:
-            logger.warning("Gemini client is unavailable; check GEMINI_API_KEY and provider connectivity.")
 
     async def initialize(self) -> None:
         """Initialize database and subcomponents."""
@@ -207,7 +203,7 @@ class TelegramPriorityApp:
                 estimated_input,
                 estimated_output,
                 reserved,
-                model=self.cfg.effective_gemini_model if self.cfg.ai_provider.lower() == "gemini" else self.cfg.ai_provider,
+                model=self.cfg.ollama_model,
             )
         logger.info(
             f"[{cls.priority} | Score: {cls.score}] {msg.chat_title} ({msg.sender_name}): {cls.summary}"
@@ -401,6 +397,13 @@ class TelegramPriorityApp:
         bot_task = None
         if self.cfg.telegram_bot_token:
             bot_task = asyncio.create_task(self._start_interactive_bot())
+            def report_bot_task(task: asyncio.Task) -> None:
+                if task.cancelled():
+                    return
+                error = task.exception()
+                if error:
+                    logger.error("Interactive bot stopped before it could receive messages", exc_info=(type(error), error, error.__traceback__))
+            bot_task.add_done_callback(report_bot_task)
 
         # Run until disconnected
         await self.telethon_client.run_until_disconnected()
@@ -645,6 +648,135 @@ class TelegramPriorityApp:
                 result.append({"chat_id": chat_id, "chat_title": title, "chat_type": chat_type, "chat_username": username})
             return result
 
+        async def find_unapproved_source_request(text: str):
+            """Resolve a natural-language request to one unapproved Telegram chat."""
+            lowered = (text or "").casefold()
+            if not any(word in lowered for word in ("check", "read", "summar", "search", "look", "access", "review")):
+                return None
+            if not self.telethon_client:
+                return None
+            # Telegram's Saved Messages is the current user's own private
+            # dialog and may not be returned with the literal title
+            # "Saved Messages" by every Telethon version.
+            if "saved messages" in lowered:
+                try:
+                    me = await self.telethon_client.get_me()
+                    saved_id = int(getattr(me, "id", 0) or self.business_access.owner_id or 0)
+                except Exception:
+                    saved_id = int(self.business_access.owner_id or 0)
+                if saved_id and saved_id not in self.focused_chat_ids():
+                    return {"chat_id": saved_id, "chat_title": "Saved Messages", "chat_type": "private", "chat_username": "me"}
+            try:
+                dialogs = await setup_dialogs()
+            except Exception:
+                logger.exception("Could not load Telegram dialogs for an access request")
+                return None
+            selected = self.focused_chat_ids()
+            candidates = []
+            for dialog in dialogs:
+                if int(dialog["chat_id"]) in selected:
+                    continue
+                aliases = [str(dialog.get("chat_title") or ""), str(dialog.get("chat_username") or "")]
+                aliases = [alias.casefold().strip() for alias in aliases if len(alias.strip()) >= 3]
+                if any(alias and alias in lowered for alias in aliases):
+                    candidates.append(dialog)
+            if not candidates:
+                return None
+            # Prefer the most specific name if a short alias matches several
+            # dialogs (for example, multiple contacts with the same surname).
+            return max(candidates, key=lambda row: max(len(str(row.get("chat_title") or "")), len(str(row.get("chat_username") or ""))))
+
+        async def read_source_after_consent(event, source: dict, request: str, persistent: bool = False):
+            """Read and summarize one explicitly approved source chat."""
+            chat_id = int(source["chat_id"])
+            if persistent:
+                await self.business_repository.upsert_focus_scope(
+                    "business",
+                    chat_id,
+                    source.get("chat_title") or "Chat",
+                    source.get("chat_type") or "private",
+                    "monitor",
+                    True,
+                )
+                self._focus_settings[chat_id] = {
+                    **source,
+                    "chat_id": chat_id,
+                    "mode": "monitor",
+                    "enabled": True,
+                }
+                if source.get("chat_type") in {"group", "channel"}:
+                    self.business_access.enable_group(chat_id)
+
+            try:
+                messages = await self.telethon_client.get_messages(chat_id, limit=40)
+                context = []
+                for message in reversed(list(messages or [])):
+                    content = (getattr(message, "message", None) or "").strip()
+                    if not content:
+                        continue
+                    sender = getattr(message, "sender", None)
+                    sender_name = getattr(sender, "first_name", None) or getattr(sender, "title", None) or "Telegram"
+                    context.append(f"[{source.get('chat_title') or 'Telegram'} · {sender_name}] {content[:1200]}")
+                if not context:
+                    answer = f"I have permission to read {source.get('chat_title') or 'that chat'}, but there are no readable text messages available."
+                else:
+                    prompt = (
+                        f"Using only the approved Telegram source '{source.get('chat_title') or 'Chat'}', "
+                        f"answer the user's request. Summarize clearly when they ask for a summary. "
+                        f"Do not claim access to other chats. User request: {request}"
+                    )
+                    answer = await self.business_assistant.answer(
+                        getattr(event, "sender_id", None),
+                        getattr(event, "chat_id", None),
+                        "private",
+                        prompt,
+                        context=context,
+                    )
+                if persistent:
+                    answer = f"✅ <b>{escape(str(source.get('chat_title') or 'Chat'))}</b> is now an approved source.\n\n{answer}"
+                await safe_edit_or_respond(event, answer, get_main_menu())
+            except Exception:
+                logger.exception("Approved source read failed for chat %s", chat_id)
+                await safe_edit_or_respond(event, "⚠️ I could not read that chat after approval. Check the connected Telegram account and try again.", get_main_menu())
+
+        async def request_source_access(event, request: str) -> bool:
+            """Ask the owner before reading a chat outside the source allow-list."""
+            user_id = getattr(event, "sender_id", None)
+            if user_id != self.business_access.owner_id:
+                return False
+            source = await find_unapproved_source_request(request)
+            if not source:
+                # If the owner clearly asked about Telegram messages but the
+                # exact title could not be resolved, send them to the same
+                # Telegram picker used by setup instead of allowing the AI to
+                # guess or search outside the allow-list.
+                lowered = request.casefold()
+                if any(word in lowered for word in ("message", "chat")):
+                    await event.respond(
+                        "🔐 <b>Choose a source chat first</b>\n\n"
+                        "I could not match that name to one Telegram dialog. Select the personal chat or group you want me to read, then ask again.",
+                        parse_mode="HTML",
+                        buttons=[[Button.inline("📂 Select chats", data=b"setup_chats")]],
+                    )
+                    return True
+                return False
+            key = (int(user_id), int(getattr(event, "chat_id", user_id)))
+            self._pending_access_requests[key] = {"source": source, "request": request}
+            chat_type = source.get("chat_type") or "private"
+            kind = "personal chat" if chat_type == "private" else ("channel" if chat_type == "channel" else "group chat")
+            title = escape(str(source.get("chat_title") or "Chat"))
+            await event.respond(
+                f"🔐 <b>Permission required</b>\n\n"
+                f"You asked me to read <b>{title}</b> ({kind}), but it is not in my approved source list.\n\n"
+                "Choose whether I should read it once for this request or add it to your monitored sources.",
+                parse_mode="HTML",
+                buttons=[
+                    [Button.inline("✅ Grant once", data=f"access_once_{source['chat_id']}".encode()), Button.inline("➕ Always allow", data=f"access_always_{source['chat_id']}".encode())],
+                    [Button.inline("❌ Cancel", data=b"access_cancel")],
+                ],
+            )
+            return True
+
         async def render_setup_chats(event, user_id: int, kind: str = "all", page: int = 0):
             state = setup_state(user_id)
             state["picker_kind"] = kind
@@ -878,19 +1010,8 @@ class TelegramPriorityApp:
             await safe_edit_or_respond(event, text, get_main_menu())
 
         async def render_home(event):
-            user_id = getattr(event, "sender_id", None)
-            rows = await self.business_assistant.list_work_items(user_id, event.chat_id, "private", "all", 200)
-            now = datetime.now(timezone.utc)
-            due_cutoff = (now + timedelta(days=2)).isoformat()
-            urgent = sum(1 for row in rows if row.get("priority") in {"P0", "P1"} and row.get("status") not in {"done", "completed"})
-            due = sum(1 for row in rows if row.get("due_at") and row.get("due_at") <= due_cutoff and row.get("status") not in {"done", "completed"})
-            blocked = sum(1 for row in rows if row.get("status") == "blocked")
-            text = (f"🤖 <b>Work Assistant</b>\n\n"
-                    f"🔥 <b>{urgent}</b> urgent work items\n"
-                    f"⏰ <b>{due}</b> due in the next 48 hours\n"
-                    f"🚧 <b>{blocked}</b> blocked\n\n"
-                    "Choose where to work next. Messages remain limited to your approved chats.")
-            await safe_edit_or_respond(event, text, get_main_menu())
+            text = "Hello! How can I help you today?"
+            await safe_edit_or_respond(event, text)
 
         async def render_my_work(event, status="open"):
             user_id = getattr(event, "sender_id", None)
@@ -927,7 +1048,45 @@ class TelegramPriorityApp:
             await safe_edit_or_respond(event, text, [[Button.inline("✅ My Work", data=b"btn_mywork"), Button.inline("🏠 Home", data=b"btn_menu")]])
 
         async def render_more(event):
-            await safe_edit_or_respond(event, "⋯ <b>More</b>\n\nChoose an additional workspace view.", [[Button.inline("💬 Sources", data=b"btn_groups"), Button.inline("🧠 Knowledge", data=b"btn_memory")], [Button.inline("📊 Reports", data=b"btn_stats"), Button.inline("⚙️ Settings", data=b"btn_setup")], [Button.inline("🏠 Home", data=b"btn_menu")]])
+            await safe_edit_or_respond(
+                event,
+                "⋯ <b>More</b>\n\nChoose an additional workspace view.",
+                [
+                    [Button.inline("💬 Sources", data=b"btn_groups"), Button.inline("🔐 Access", data=b"btn_access")],
+                    [Button.inline("🧠 Knowledge", data=b"btn_memory"), Button.inline("📊 Reports", data=b"btn_stats")],
+                    [Button.inline("⚙️ Settings", data=b"btn_setup"), Button.inline("🏠 Home", data=b"btn_menu")],
+                ],
+            )
+
+        async def render_access_view(event):
+            user_id = getattr(event, "sender_id", None)
+            if user_id != self.business_access.owner_id:
+                await event.respond("🔒 Only the owner can view bot access settings.")
+                return
+            users = await self.business_repository.list_users(100)
+            approved_users = [str(row.get("user_id")) for row in users if row.get("approved")]
+            sources = await self.business_repository.list_focus_scopes("business")
+            source_lines = []
+            group_lines = []
+            for row in sources:
+                chat_type = row.get("chat_type") or "private"
+                icon = "👤" if chat_type == "private" else ("📣" if chat_type == "channel" else "👥")
+                mode = {"monitor": "Everything", "mention": "Mentions only", "orders": "Action items"}.get(row.get("mode"), "Active")
+                label = f"{icon} {row.get('chat_title') or row.get('chat_id')} · {mode}"
+                source_lines.append(f"• {label}")
+                if chat_type in {"group", "channel"}:
+                    group_lines.append(f"• {label}")
+            text = (
+                "🔐 <b>Bot access</b>\n\n"
+                f"<b>Owner:</b> <code>{escape(str(self.business_access.owner_id))}</code>\n"
+                f"<b>Approved people:</b> {escape(', '.join(approved_users) or 'none')}\n"
+                "<b>Approved group chats:</b>\n"
+                + ("\n".join(group_lines) if group_lines else "• none")
+                + "\n\n<b>Message sources the bot may read:</b>\n"
+                + ("\n".join(source_lines) if source_lines else "• none")
+                + "\n\nA selected personal chat is a read source; it does not grant that person permission to use the bot. Group access and message-source access are also managed separately."
+            )
+            await safe_edit_or_respond(event, text, [[Button.inline("⚙️ Manage setup", data=b"btn_setup")], [Button.inline("🏠 Home", data=b"btn_menu")]])
 
         async def render_reminders_view(event):
             user_id = getattr(event, "sender_id", None)
@@ -1154,6 +1313,17 @@ class TelegramPriorityApp:
 
             await safe_edit_or_respond(event, "\n".join(lines), get_tier_menu(tier))
 
+        self.agent_runtime = AgentRuntime(
+            self.business_assistant,
+            self.business_repository,
+            self.business_provider,
+            message_database=self.db,
+            registry=build_registry(),
+            timeout_seconds=self.cfg.ai_request_timeout_seconds,
+            allowed_chat_ids_provider=self.focused_chat_ids,
+        )
+        logger.info("Interactive bot message and callback handlers registered")
+
         @bot_client.on(events.NewMessage)
         async def on_bot_message(event):
             # Group conversations are opt-in and only respond to a mention or
@@ -1286,6 +1456,21 @@ class TelegramPriorityApp:
                 self.business_access.approve_user(member_id)
                 await self.business_repository.upsert_user(member_id, approved=True)
                 await event.respond(f"✅ Member <code>{member_id}</code> added to the setup.", parse_mode="HTML", buttons=setup_home_buttons(state))
+                return
+
+            # Cancel only an active consent or task/project draft. A normal
+            # conversational use of these words still reaches the AI.
+            pending_key = (int(user_id), int(getattr(event, "chat_id", user_id))) if user_id is not None else None
+            cancel_phrases = {"cancel", "cancel this", "never mind", "nevermind", "stop", "no thanks", "don't grant", "do not grant"}
+            has_pending_flow = pending_key is not None and (pending_key in self._pending_access_requests or user_id in self._pm_state)
+            natural_cancel = text_lower in cancel_phrases or text_lower.startswith(("cancel ", "please cancel", "stop "))
+            if text_lower == "/cancel" or (natural_cancel and has_pending_flow):
+                cancelled_access = self._pending_access_requests.pop(pending_key, None) if pending_key else None
+                cancelled_draft = self._pm_state.pop(user_id, None) if user_id is not None else None
+                if cancelled_access or cancelled_draft:
+                    await event.respond("❌ Cancelled. No new chat access or work item was created.")
+                else:
+                    await event.respond("There is nothing waiting to be cancelled.")
                 return
 
             if not self._focus_settings and not (
@@ -1497,8 +1682,11 @@ class TelegramPriorityApp:
                 except PermissionError:
                     await event.respond("🔒 This assistant is available only to approved users and groups.")
                 return
-            if text_lower in {"/tasks", "tasks", "✅ tasks"}:
+            if text_lower in {"/tasks", "tasks", "✅ tasks", "my work", "work", "✅ my work"}:
                 await render_tasks_view(event)
+                return
+            if text_lower in {"/access", "access"}:
+                await render_access_view(event)
                 return
             if text_lower.startswith("/done "):
                 try:
@@ -1530,7 +1718,7 @@ class TelegramPriorityApp:
                     if len(query_parts) == 2:
                         await event.respond(f"🌐 <b>Live source</b>\n\n{escape(clip_text(live, 3500))}", parse_mode="HTML", buttons=get_main_menu())
                     else:
-                        answer = await asyncio.wait_for(self.business_assistant.answer(user_id, event.chat_id, "private" if event.is_private else "group", query_parts[2], [live]), timeout=45)
+                        answer = await asyncio.wait_for(self.business_assistant.answer(user_id, event.chat_id, "private" if event.is_private else "group", query_parts[2], [live]), timeout=self.cfg.ai_request_timeout_seconds)
                         await event.respond(answer, parse_mode="HTML", buttons=get_main_menu())
                 except Exception as exc:
                     logger.warning("Live fetch failed: %s", exc)
@@ -1690,6 +1878,21 @@ class TelegramPriorityApp:
             # from private chat. Staff remain scoped until source access is
             # explicitly configured.
             chat_type = "private" if event.is_private else ("channel" if event.is_channel else "group")
+
+            # Keep greetings conversational. They should not trigger the work
+            # agent or advertise task/project features before the user asks
+            # for them.
+            if assistant is self.business_assistant and text_lower.strip() in {
+                "hi", "hello", "hey", "hiya", "good morning", "good afternoon", "good evening",
+            }:
+                await event.respond("Hello! How can I help you today?")
+                return
+
+            # A request for an unapproved person or group chat starts a
+            # consent flow before any Telegram history is read.
+            if assistant is self.business_assistant and await request_source_access(event, text):
+                return
+
             if event.is_private and user_id == self.business_access.owner_id:
                 # The owner can ask about the messages already captured by the
                 # listener. Approved staff remain scoped until source access is
@@ -1705,16 +1908,17 @@ class TelegramPriorityApp:
             ]
             progress = await event.respond("⏳ Thinking…")
             try:
-                answer = await asyncio.wait_for(
-                    assistant.answer(
-                        user_id=user_id,
-                        chat_id=event.chat_id,
-                        chat_type=chat_type,
-                        query=text,
-                        context=context,
-                    ),
-                    timeout=45,
-                )
+                async with bot_client.action(event.chat_id, "typing"):
+                    if assistant is self.business_assistant:
+                        answer = await asyncio.wait_for(
+                            self.agent_runtime.handle_turn(user_id, event.chat_id, chat_type, text),
+                            timeout=self.cfg.ai_request_timeout_seconds,
+                        )
+                    else:
+                        answer = await asyncio.wait_for(
+                            assistant.answer(user_id, event.chat_id, chat_type, text, context=context),
+                            timeout=self.cfg.ai_request_timeout_seconds,
+                        )
             except PermissionError:
                 await progress.edit("🔒 This assistant is available only to approved users and groups.")
                 return
@@ -1722,17 +1926,17 @@ class TelegramPriorityApp:
                 await progress.edit("⏸️ The AI allowance is currently used. Please contact the administrator.")
                 return
             except RuntimeError:
-                await progress.edit("⚠️ Gemini is not configured or is temporarily unavailable. Check the terminal log.")
+                await progress.edit("⚠️ Ollama is not configured or is temporarily unavailable. Check the terminal log.")
                 return
             except asyncio.TimeoutError:
-                logger.error("Business assistant request timed out after 45 seconds")
-                await progress.edit("⚠️ Gemini took too long to respond. Please try again.")
+                logger.error("Business assistant request timed out after %s seconds", self.cfg.ai_request_timeout_seconds)
+                await progress.edit("⚠️ Ollama took too long to respond. Please try again.")
                 return
             except Exception:
                 logger.exception("Business assistant request failed")
                 await progress.edit("⚠️ I could not reach the AI service. Please check the API key, model name, and network connection.")
                 return
-            await progress.edit(answer, parse_mode="HTML", buttons=get_main_menu())
+            await progress.edit(answer, parse_mode="HTML")
 
         # Callback queries for inline buttons - EDIT IN PLACE (NO SPAM)
         @bot_client.on(events.CallbackQuery)
@@ -1871,6 +2075,26 @@ class TelegramPriorityApp:
 
             if not self._focus_settings:
                 await event.answer("Complete workspace setup before using the assistant", alert=True)
+                return
+
+            if data.startswith(b"access_once_") or data.startswith(b"access_always_") or data == b"access_cancel":
+                if callback_user_id != self.business_access.owner_id:
+                    await event.answer("Only the owner can grant source access", alert=True)
+                    return
+                key = (int(callback_user_id), int(callback_chat_id))
+                pending = self._pending_access_requests.get(key)
+                if data == b"access_cancel":
+                    self._pending_access_requests.pop(key, None)
+                    await event.answer("Access request cancelled")
+                    await safe_edit_or_respond(event, "❌ No chat was read.", get_main_menu())
+                    return
+                if not pending:
+                    await event.answer("This access request has expired", alert=True)
+                    return
+                persistent = data.startswith(b"access_always_")
+                self._pending_access_requests.pop(key, None)
+                await event.answer("Reading approved chat..." if not persistent else "Chat added to approved sources...")
+                await read_source_after_consent(event, pending["source"], pending["request"], persistent=persistent)
                 return
 
             if data == b"btn_new_project":
@@ -2026,6 +2250,10 @@ class TelegramPriorityApp:
             elif data == b"btn_more":
                 await event.answer()
                 await render_more(event)
+
+            elif data == b"btn_access":
+                await event.answer("Loading access settings...")
+                await render_access_view(event)
 
             elif data.startswith(b"project_board_"):
                 await event.answer("Loading project board...")

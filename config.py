@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import List, Optional
 import yaml
@@ -62,9 +61,7 @@ class AppConfig(BaseSettings):
     notification_chat_id: Optional[int] = Field(default=None, alias="NOTIFICATION_CHAT_ID")
 
     # AI Configuration
-    ai_provider: str = Field(default="gemini", alias="AI_PROVIDER")  # "gemini", "openai", "openrouter", or "ollama"
-    gemini_api_key: Optional[str] = Field(default=None, alias="GEMINI_API_KEY")
-    gemini_model: str = Field(default="gemini-3.6-flash", alias="GEMINI_MODEL")
+    ai_provider: str = Field(default="ollama", alias="AI_PROVIDER")
 
     # Business assistant access and budget. The budget is a guardrail, not a
     # provider subscription or a promise of a fixed message quota.
@@ -85,18 +82,11 @@ class AppConfig(BaseSettings):
     crm_webhook_url: Optional[str] = Field(default=None, alias="CRM_WEBHOOK_URL")
     task_webhook_url: Optional[str] = Field(default=None, alias="TASK_WEBHOOK_URL")
 
-    @property
-    def effective_gemini_model(self) -> str:
-        return os.getenv("GEMINI_TEXT_MODEL") or self.gemini_model or "gemini-3.6-flash"
-
-    openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
-    openai_base_url: Optional[str] = Field(default=None, alias="OPENAI_BASE_URL")
-
     # Ollama Configuration
     ollama_base_url: str = Field(default="http://localhost:11434/v1", alias="OLLAMA_BASE_URL")
     ollama_model: str = Field(default="llama3.1", alias="OLLAMA_MODEL")
     ollama_api_key: str = Field(default="ollama", alias="OLLAMA_API_KEY")
+    ai_request_timeout_seconds: float = Field(default=120.0, alias="AI_REQUEST_TIMEOUT_SECONDS")
 
     # Priority & Alerts
     urgent_score_threshold: int = Field(default=90, alias="URGENT_SCORE_THRESHOLD")
