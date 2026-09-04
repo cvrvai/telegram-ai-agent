@@ -7,6 +7,17 @@ from typing import List, Optional, Dict, Any
 from models import MessageRecord, DigestStats, PriorityClassification, IncomingMessage
 
 
+def _chat_scope(allowed_chat_ids: Optional[set[int]], prefix: str = " AND ") -> tuple[str, list[int]]:
+    """Build a safe SQL scope for owner-selected Telegram chats."""
+    if allowed_chat_ids is None:
+        return "", []
+    ids = sorted({int(chat_id) for chat_id in allowed_chat_ids})
+    if not ids:
+        return f"{prefix}1=0", []
+    placeholders = ",".join("?" for _ in ids)
+    return f"{prefix}chat_id IN ({placeholders})", ids
+
+
 class Database:
     def __init__(self, db_path: str = "telegram_bot.db"):
         self.db_path = db_path
@@ -68,6 +79,12 @@ class Database:
 
             await db.commit()
 
+        # Business assistant tables are intentionally maintained separately
+        # from the legacy message tables so both schemas can be migrated
+        # without changing existing alert or digest records.
+        from app.storage.business import init_business_schema
+        await init_business_schema(self.db_path)
+
     async def save_message(
         self,
         msg: IncomingMessage,
@@ -84,9 +101,9 @@ class Database:
                     sender_id, sender_name, sender_username, text,
                     date, media_type, message_link,
                     priority, score, reason, needs_action,
-                    action, deadline, category, summary,
+                    action, deadline, category, summary, message_type, ai_confidence,
                     is_prefiltered, alert_sent, digest_sent, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     msg.message_id,
@@ -108,8 +125,12 @@ class Database:
                     classification.deadline,
                     classification.category,
                     classification.summary,
+                    classification.message_type,
+                    classification.ai_confidence,
                     1 if is_prefiltered else 0,
                     1 if alert_sent else 0,
+                    0,
+                    msg.date.isoformat(),
                 ),
             )
             await db.commit()
@@ -124,15 +145,24 @@ class Database:
             )
             await db.commit()
 
-    async def get_pending_digest_messages(self) -> List[MessageRecord]:
+    async def message_exists(self, chat_id: int, message_id: int) -> bool:
+        """Return whether a Telegram message has already been imported."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT 1 FROM messages WHERE chat_id = ? AND message_id = ? LIMIT 1",
+                (chat_id, message_id),
+            )
+            return await cursor.fetchone() is not None
+
+    async def get_pending_digest_messages(self, allowed_chat_ids: Optional[set[int]] = None) -> List[MessageRecord]:
         """Fetch all messages that have not yet been included in a digest."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("""
-                SELECT * FROM messages
-                WHERE digest_sent = 0
-                ORDER BY score DESC, id ASC
-            """)
+            scope, scope_params = _chat_scope(allowed_chat_ids)
+            cursor = await db.execute(
+                f"SELECT * FROM messages WHERE digest_sent = 0{scope} ORDER BY score DESC, id ASC",
+                scope_params,
+            )
             rows = await cursor.fetchall()
             return [
                 MessageRecord(
@@ -156,6 +186,8 @@ class Database:
                     deadline=row["deadline"],
                     category=row["category"] or "general",
                     summary=row["summary"] or "",
+                    message_type=row["message_type"] or "unknown",
+                    ai_confidence=float(row["ai_confidence"] or 0),
                     is_prefiltered=bool(row["is_prefiltered"]),
                     alert_sent=bool(row["alert_sent"]),
                     digest_sent=bool(row["digest_sent"]),
@@ -197,18 +229,14 @@ class Database:
             await db.commit()
             return cursor.lastrowid
 
-    async def get_priority_messages(self, limit: int = 20) -> List[MessageRecord]:
+    async def get_priority_messages(self, limit: int = 20, allowed_chat_ids: Optional[set[int]] = None) -> List[MessageRecord]:
         """Fetch latest high-priority messages (P0 and P1)."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            scope, scope_params = _chat_scope(allowed_chat_ids)
             cursor = await db.execute(
-                """
-                SELECT * FROM messages
-                WHERE priority IN ('P0', 'P1')
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (limit,),
+                f"SELECT * FROM messages WHERE priority IN ('P0', 'P1'){scope} ORDER BY id DESC LIMIT ?",
+                [*scope_params, limit],
             )
             rows = await cursor.fetchall()
             return [
@@ -233,6 +261,8 @@ class Database:
                     deadline=row["deadline"],
                     category=row["category"] or "general",
                     summary=row["summary"] or "",
+                    message_type=row["message_type"] or "unknown",
+                    ai_confidence=float(row["ai_confidence"] or 0),
                     is_prefiltered=bool(row["is_prefiltered"]),
                     alert_sent=bool(row["alert_sent"]),
                     digest_sent=bool(row["digest_sent"]),
@@ -241,18 +271,14 @@ class Database:
                 for row in rows
             ]
 
-    async def get_messages_by_tier(self, tier: str, limit: int = 15) -> List[MessageRecord]:
+    async def get_messages_by_tier(self, tier: str, limit: int = 15, allowed_chat_ids: Optional[set[int]] = None) -> List[MessageRecord]:
         """Fetch messages filtered by a specific priority tier (P0, P1, P2, P3)."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            scope, scope_params = _chat_scope(allowed_chat_ids)
             cursor = await db.execute(
-                """
-                SELECT * FROM messages
-                WHERE priority = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (tier.upper(), limit),
+                f"SELECT * FROM messages WHERE priority = ?{scope} ORDER BY id DESC LIMIT ?",
+                [tier.upper(), *scope_params, limit],
             )
             rows = await cursor.fetchall()
             return [
@@ -277,6 +303,8 @@ class Database:
                     deadline=row["deadline"],
                     category=row["category"] or "general",
                     summary=row["summary"] or "",
+                    message_type=row["message_type"] or "unknown",
+                    ai_confidence=float(row["ai_confidence"] or 0),
                     is_prefiltered=bool(row["is_prefiltered"]),
                     alert_sent=bool(row["alert_sent"]),
                     digest_sent=bool(row["digest_sent"]),
@@ -285,17 +313,14 @@ class Database:
                 for row in rows
             ]
 
-    async def get_recent_messages(self, limit: int = 40) -> List[MessageRecord]:
+    async def get_recent_messages(self, limit: int = 40, allowed_chat_ids: Optional[set[int]] = None) -> List[MessageRecord]:
         """Fetch most recent messages for conversational AI Q&A."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            scope, scope_params = _chat_scope(allowed_chat_ids)
             cursor = await db.execute(
-                """
-                SELECT * FROM messages
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (limit,),
+                f"SELECT * FROM messages WHERE 1=1{scope} ORDER BY id DESC LIMIT ?",
+                [*scope_params, limit],
             )
             rows = await cursor.fetchall()
             return [
@@ -320,6 +345,8 @@ class Database:
                     deadline=row["deadline"],
                     category=row["category"] or "general",
                     summary=row["summary"] or "",
+                    message_type=row["message_type"] or "unknown",
+                    ai_confidence=float(row["ai_confidence"] or 0),
                     is_prefiltered=bool(row["is_prefiltered"]),
                     alert_sent=bool(row["alert_sent"]),
                     digest_sent=bool(row["digest_sent"]),
@@ -330,12 +357,13 @@ class Database:
 
 
 
-    async def get_active_groups(self, limit: int = 10) -> List[Dict[str, Any]]:
+    async def get_active_groups(self, limit: int = 10, allowed_chat_ids: Optional[set[int]] = None) -> List[Dict[str, Any]]:
         """Fetch active chats/groups with message and priority counts."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            scope, scope_params = _chat_scope(allowed_chat_ids)
             cursor = await db.execute(
-                """
+                f"""
                 SELECT
                     chat_id,
                     chat_title,
@@ -344,20 +372,22 @@ class Database:
                     SUM(CASE WHEN priority IN ('P0', 'P1') THEN 1 ELSE 0 END) as priority_count,
                     MAX(date) as last_activity
                 FROM messages
-                WHERE chat_title IS NOT NULL AND chat_title != ''
+                WHERE chat_title IS NOT NULL AND chat_title != ''{scope}
                 GROUP BY chat_id, chat_title, chat_type
                 ORDER BY last_activity DESC
                 LIMIT ?
                 """,
-                (limit,),
+                [*scope_params, limit],
             )
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
-    async def get_messages_for_chat(self, chat_id: int, limit: int = 15) -> List[MessageRecord]:
+    async def get_messages_for_chat(self, chat_id: int, limit: int = 15, allowed_chat_ids: Optional[set[int]] = None) -> List[MessageRecord]:
         """Fetch recent messages for a specific chat/group."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            if allowed_chat_ids is not None and int(chat_id) not in {int(value) for value in allowed_chat_ids}:
+                return []
             cursor = await db.execute(
                 """
                 SELECT * FROM messages
@@ -390,6 +420,8 @@ class Database:
                     deadline=row["deadline"],
                     category=row["category"] or "general",
                     summary=row["summary"] or "",
+                    message_type=row["message_type"] or "unknown",
+                    ai_confidence=float(row["ai_confidence"] or 0),
                     is_prefiltered=bool(row["is_prefiltered"]),
                     alert_sent=bool(row["alert_sent"]),
                     digest_sent=bool(row["digest_sent"]),
@@ -398,11 +430,12 @@ class Database:
                 for row in rows
             ]
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self, allowed_chat_ids: Optional[set[int]] = None) -> Dict[str, Any]:
         """Fetch overall classification statistics."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("""
+            scope, scope_params = _chat_scope(allowed_chat_ids)
+            cursor = await db.execute(f"""
                 SELECT
                     COUNT(*) as total,
                     SUM(CASE WHEN priority = 'P0' THEN 1 ELSE 0 END) as p0,
@@ -413,7 +446,8 @@ class Database:
                     SUM(CASE WHEN alert_sent = 1 THEN 1 ELSE 0 END) as alerts_sent,
                     SUM(CASE WHEN digest_sent = 0 THEN 1 ELSE 0 END) as pending_digest
                 FROM messages
-            """)
+                WHERE 1=1{scope}
+            """, scope_params)
             row = await cursor.fetchone()
             if not row:
                 return {}
@@ -427,5 +461,3 @@ class Database:
                 "alerts_sent": row["alerts_sent"] or 0,
                 "pending_digest": row["pending_digest"] or 0,
             }
-
-

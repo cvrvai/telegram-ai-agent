@@ -32,7 +32,8 @@ Instant Telegram Push Alert     Periodic 3-Tier Digest
   - `[ 🔴 Priority Messages ]`
   - `[ 📊 System Stats ]`
 - 💬 **Ask AI About Your Chats:** Type any question to your bot (e.g. *"What did my lecturer announce today?"* or *"Any updates on CloudKH?"*) and get instant answers based on captured message context.
-- 🔌 **Multi-Model Support:** Native integration with **Google Gemini** (`gemini-3.5-flash-lite`, `gemini-3.6-flash`) and local/remote **Ollama**.
+- 📎 **Business Documents:** Analyze PDF, TXT, CSV, JSON, YAML, XLSX, XLS, and common image files through the configured AI provider.
+- 🔌 **Multi-Model Support:** Native integration with **Google Gemini** (`gemini-3.6-flash`) and local/remote **Ollama**.
 
 ---
 
@@ -97,7 +98,7 @@ NOTIFICATION_CHAT_ID=1265124779
 # 3. AI Provider (Google Gemini)
 AI_PROVIDER=gemini
 GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_MODEL=gemini-3.5-flash-lite
+GEMINI_MODEL=gemini-3.6-flash
 
 # 4. Priority & Alert Rules
 URGENT_SCORE_THRESHOLD=90
@@ -115,12 +116,49 @@ DIGEST_SCHEDULE_TIMES=08:00,13:00,19:00,22:00
 ```
 *On first startup, Telegram will send a login code to your Telegram app. Enter it in the terminal to save your login session.*
 
+### 2. Docker + MongoDB deployment
+
+MongoDB is the only runtime storage backend. Set `MONGO_URI` and start the stack:
+
+```powershell
+docker compose up -d --build
+docker compose logs -f bot
+```
+
+The Compose file stores Telegram messages, classifications, business data, and assistant state in MongoDB. Stop the stack with `docker compose down`; do not add `-v` unless you intend to delete MongoDB data.
+
+To migrate an existing SQLite database before the MongoDB-only cutover, stop the bot and run the idempotent migration once:
+
+```powershell
+docker compose stop bot
+docker compose run --rm bot python migrate_sqlite_to_mongo.py --sqlite /app/data/telegram_bot.db --mongo-uri mongodb://mongo:27017 --mongo-database telegram_business
+docker compose up -d bot
+```
+
+On the first Docker deployment, authorize the Telethon user session from an attached terminal. A detached container cannot answer Telegram's login-code prompt:
+
+```powershell
+docker compose down
+docker compose run --rm bot
+```
+
+Enter the Telegram login code (and the two-step password if requested). Once the log shows that the userbot and interactive bot are connected, press `Ctrl+C`; the session files will be saved in `./runtime`. Start the background service afterward:
+
+```powershell
+docker compose up -d bot
+docker compose logs -f bot
+```
+
+If you already authorized the bot outside Docker, copy `telegram_ai_session.session` and `bot_listener_session.session` into `./runtime` before starting Compose. Keep `./runtime` and the `mongo_data` volume; deleting them forces a new Telegram login or removes persisted business state.
+
 ### 2. Chat with Your Bot on Telegram
 Open your bot in Telegram and send:
 ```text
 /start
 ```
 Use the interactive inline buttons or ask questions conversationally!
+
+Use `/id` if you need to display your Telegram user ID while configuring `OWNER_USER_ID`.
 
 ---
 
@@ -132,6 +170,9 @@ Use the interactive inline buttons or ask questions conversationally!
 | `python main.py test` | Run the simulation test suite on sample messages |
 | `python main.py digest` | Trigger an immediate manual digest of pending messages |
 | `python main.py stats` | View database statistics (total messages, noise filtered, pending queue) |
+| `python main.py dashboard` | Start the authenticated business management dashboard |
+| `python main.py backfill --days 7 --limit 50` | Import older Telegram messages into the classifier and history database |
+| `python migrate_sqlite_to_mongo.py --mongo-uri ...` | Copy existing SQLite records into MongoDB before switching storage |
 
 ---
 
@@ -176,7 +217,7 @@ important_projects:
 ├── config.py              # Configuration manager & YAML loader
 ├── user_profile.yaml      # Personalized user priority rules
 ├── models.py              # Pydantic schemas (Classification, Messages, Digests)
-├── database.py            # Async SQLite database engine
+├── database.py            # Legacy SQLite importer/test compatibility engine
 ├── prefilter.py           # Zero-token rule pre-filter
 ├── classifier.py          # AI priority classifier (Gemini / Ollama / OpenAI)
 ├── notifier.py            # Telegram alert dispatcher & HTML formatter
@@ -186,3 +227,34 @@ important_projects:
 ├── test_classifier.py     # Comprehensive test suite
 └── pyproject.toml         # Dependencies and metadata
 ```
+
+## Business assistant structure
+
+The maintainable business features live under [`app/`](app/):
+
+```text
+app/
+├── ai/          # Gemini and compatible provider adapters
+├── assistants/  # Assistant profiles and routing
+├── content/     # Bounded text, PDF, and image handling
+├── dashboard/   # Authenticated dashboard data services
+├── projects/    # Project planning and Critical Path Method calculation
+├── security/    # Approved users, groups, and pairing policy
+├── services/    # Use cases that coordinate the application
+├── storage/     # MongoDB runtime repositories and SQLite migration support
+└── usage/       # Shared AI budget and usage accounting
+```
+
+Telegram handlers translate events into `app.services` use cases. Providers never decide access, storage never sends messages, and every AI operation is recorded against the shared budget. See [`docs/architecture.md`](docs/architecture.md) and [`docs/client-video-feature-scope.md`](docs/client-video-feature-scope.md) for the delivery phases.
+
+For the business assistant, set `AI_PROVIDER=gemini`, provide `GEMINI_API_KEY`, and choose `GEMINI_MODEL=gemini-3.6-flash`. Set `OWNER_USER_ID` to the administrator's Telegram user ID; optionally provide comma-separated `APPROVED_USER_IDS` and `APPROVED_GROUP_IDS`. `AI_MONTHLY_BUDGET_USD` defaults to `20.0`.
+
+Telegram business commands include `/setup`, `/setup search NAME`, `/setup user TELEGRAM_USER_ID`, `/department`, `/departments`, `/project`, `/projects`, `/ptask`, `/assign`, `/status`, `/dep`, `/milestone`, `/comment`, `/plan` (CPM), `/task`, `/tasks`, `/done`, `/remind`, `/reminders`, `/web URL [question]`, `/draft CHAT_ID message`, `/email recipient | subject | message`, `/event start | title | optional end`, `/assistant [id]`, `/memory [search]`, `/new`, `/forget all`, and `/integrations`. Outbound drafts always wait for an owner approval button before delivery. `/web` is read-only and limited to public HTTP(S) sources.
+
+Use `/setup` in the owner's private chat to open the focus wizard. Setup is required before the first message is inspected: with no saved focus list, the userbot returns immediately and the assistant does not process or classify any chat. Choose **Select groups** for AIC and other internal groups, or **Select people** for Daivai, suppliers, and customers. In either picker, tap **Search**, type a name directly (for example `daivai`), and select the matching result. Set each chat to **Monitor**, **Mention only**, or **Orders/tasks**, add approved members, and press **Save setup**. If the picker cannot load dialogs, add the bot to the target group and send `/setup here` there as the owner; the group is added without processing its history. Once saved, the userbot sends only the selected chats through classification and alerts, and all digests, priority views, statistics, and AI context use the same selected-chat scope. The AIC group can be used as the internal workspace while supplier and customer chats remain separate focused sources. The owner can add a member with `/setup user TELEGRAM_USER_ID`; access is still controlled by the normal approval policy.
+
+CPM uses each task's duration in days and finish-to-start dependencies. `/plan PROJECT_ID` reports project duration, completion percentage, early/late dates, float, and the critical task path; dependency cycles are rejected.
+
+`ASSISTANT_IDS` creates separate assistant contexts in storage (for example `business,sales,support`). Optional email, calendar, CRM, and task connectors use signed webhook endpoints (`*_WEBHOOK_URL` plus `INTEGRATION_SECRET`) and remain disabled until configured. The management dashboard is delivered as a Telegram Web App: set `DASHBOARD_PUBLIC_URL` to the public HTTPS URL and `DASHBOARD_TOKEN`; the bot then shows an **Open Project Workspace** button inside Telegram. Its authenticated APIs expose status, users, groups, departments, projects, CPM plans, assistants, schedules, permissions, pending approvals, and task views through `/api/status`, `/api/users`, `/api/groups`, `/api/departments`, `/api/projects`, `/api/projects/{id}/plan`, `/api/assistants`, `/api/schedules`, `/api/permissions`, `/api/actions`, and `/api/tasks`.
+
+Set `DASHBOARD_TOKEN` and `DASHBOARD_PUBLIC_URL` before starting the bot. The Web App must be served through HTTPS; in Docker the dashboard listens on port `3141`, so point your existing reverse proxy/domain to that port. The standalone `python main.py dashboard` command remains available for administration and diagnostics.

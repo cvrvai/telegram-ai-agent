@@ -8,10 +8,15 @@ from pydantic import BaseModel, Field
 
 
 PriorityLevel = Literal["P0", "P1", "P2", "P3"]
+MessageType = Literal["task", "update", "question", "decision", "waiting", "blocker", "chatter", "unknown"]
 
 
 class PriorityClassification(BaseModel):
-    """Structured output returned by the AI Classifier."""
+    """Structured output returned by the AI classifier.
+
+    Priority and message type are deliberately independent dimensions. A
+    critical update and a low-priority task are both valid classifications.
+    """
 
     priority: PriorityLevel = Field(
         description="P0 (Urgent/Emergency/Blocker), P1 (Important/Actionable), P2 (Useful update), P3 (Noise/Chatter)"
@@ -40,6 +45,16 @@ class PriorityClassification(BaseModel):
     )
     summary: str = Field(
         description="A crisp, 1-sentence summary of the message in the perspective of what matters to the user."
+    )
+    message_type: MessageType = Field(
+        default="unknown",
+        description="Independent work/message type: task, update, question, decision, waiting, blocker, chatter, or unknown.",
+    )
+    ai_confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Classifier confidence from 0.0 to 1.0.",
     )
 
 
@@ -87,6 +102,8 @@ class MessageRecord(BaseModel):
     deadline: Optional[str] = None
     category: str
     summary: str
+    message_type: MessageType = "unknown"
+    ai_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
     # Pipeline tracking
     is_prefiltered: bool = False

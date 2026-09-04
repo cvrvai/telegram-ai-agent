@@ -1,0 +1,19 @@
+"""Repository contract shared by SQLite and Mongo business storage.
+
+The Telegram handlers depend on these small use cases rather than database
+specific IDs or query syntax. Both adapters return dictionaries with the same
+work item fields and keep legacy task method names as compatibility wrappers.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Optional, Protocol
+
+
+class WorkRepository(Protocol):
+    async def create_project(self, user_id: int, name: str, description: str = "", department_id: Any = None, start_date: Optional[str] = None, target_date: Optional[str] = None) -> Any: ...
+    async def list_projects(self, user_id: int, limit: int = 50) -> list[dict[str, Any]]: ...
+    async def create_task(self, user_id: int, title: str, details: str = "", due_at: Optional[str] = None, project_id: Any = None, assignee_id: Optional[int] = None, priority: str = "P2", duration_days: int = 1, item_type: str = "task", parent_id: Any = None, **kwargs: Any) -> Any: ...
+    async def get_work_item(self, user_id: int, item_id: Any) -> Optional[dict[str, Any]]: ...
+    async def list_work_items(self, user_id: int, status: str = "all", limit: int = 50, offset: int = 0, project_id: Any = None, assignee_id: Optional[int] = None, due_before: Optional[str] = None) -> list[dict[str, Any]]: ...
+    async def update_task(self, user_id: int, task_id: Any, **changes: Any) -> bool: ...

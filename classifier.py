@@ -78,22 +78,25 @@ LOW PRIORITY (P3 - Score 0-39):
 KEY PROJECTS: {projects}
 VIP SENDER LIST: {vips}
 
-=== PRIORITY DEFINITIONS ===
-* P0 (Score 90-100) - URGENT:
+=== PRIORITY DEFINITIONS (independent from message type) ===
+* P0 (Score 90-100) - CRITICAL:
   - Immediate action/reply required NOW.
   - Critical emergencies, server downtime, financial/supplier blockers, urgent payment confirmation.
   - Direct request from professor/boss with immediate deadline.
 
-* P1 (Score 70-89) - IMPORTANT:
+* P1 (Score 70-89) - HIGH:
   - Important tasks, assignment deadline changes, project decisions, code reviews, wireframe approvals.
   - Direct questions addressed to the user requiring response within hours.
 
-* P2 (Score 40-69) - USEFUL:
-  - Informational updates, progress reports, meeting minutes, technical announcements.
-  - No immediate user action required.
+* P2 (Score 40-69) - NORMAL:
+  - Planned work, useful updates, decisions, and routine questions.
 
-* P3 (Score 0-39) - NOISE:
-  - Banter, jokes, sports discussions, memes, casual conversation, repeated messages, greetings.
+* P3 (Score 0-39) - LOW:
+  - Low-impact work or chatter. Chatter is not a task unless explicitly converted.
+
+=== MESSAGE / WORK TYPE (independent from priority) ===
+Choose exactly one: task, update, question, decision, waiting, blocker, chatter.
+An update may be P0 and a task may be P3. Do not infer type from priority.
 
 === CONTEXT EVALUATION INSTRUCTION ===
 Always evaluate context!
@@ -155,7 +158,9 @@ MESSAGE CONTENT:
             + '  "action": "string" or null,\n'
             + '  "deadline": "string" or null,\n'
             + '  "category": "string",\n'
-            + '  "summary": "string"\n'
+             + '  "summary": "string",\n'
+             + '  "message_type": "task" | "update" | "question" | "decision" | "waiting" | "blocker" | "chatter",\n'
+             + '  "ai_confidence": number (0.0 to 1.0)\n'
             + "}"
         )
         user_prompt = self._build_user_message(msg)
@@ -262,12 +267,15 @@ MESSAGE CONTENT:
         chat = (msg.chat_title or "").lower()
 
         is_urgent = any(w in text for w in ["deadline", "urgent", "asap", "emergency", "payment", "due today", "cancel"])
+        is_blocker = any(w in text for w in ["blocking", "blocked", "outage", "production down", "service disconnection"])
+        is_question = "?" in text or any(w in text for w in ["can you", "could you", "please confirm"])
+        is_task = any(w in text for w in ["please", "need to", "fix", "send", "prepare", "review", "approve", "finish"])
         is_cloudkh = "cloudkh" in text or "cloudkh" in chat
         is_uni = "university" in chat or "assignment" in text or "exam" in text
 
-        if is_urgent or (is_cloudkh and "approve" in text):
+        if is_urgent or is_blocker or (is_cloudkh and "approve" in text):
             return PriorityClassification(
-                priority="P1",
+                priority="P0" if is_blocker or "emergency" in text or "production down" in text else "P1",
                 score=85,
                 reason=reason or "Keyword heuristic: Urgent deadline/approval detected.",
                 needs_action=True,
@@ -275,6 +283,8 @@ MESSAGE CONTENT:
                 deadline=None,
                 category="project" if is_cloudkh else "general",
                 summary=f"[{msg.chat_title}] {msg.text[:100]}",
+                message_type="blocker" if is_blocker else ("question" if is_question and not is_task else "task"),
+                ai_confidence=0.35,
             )
         elif is_uni or is_cloudkh:
             return PriorityClassification(
@@ -286,6 +296,8 @@ MESSAGE CONTENT:
                 deadline=None,
                 category="project" if is_cloudkh else "university",
                 summary=f"[{msg.chat_title}] {msg.text[:100]}",
+                message_type="update",
+                ai_confidence=0.30,
             )
         else:
             return PriorityClassification(
@@ -297,6 +309,8 @@ MESSAGE CONTENT:
                 deadline=None,
                 category="general",
                 summary=f"[{msg.chat_title}] {msg.text[:80]}",
+                message_type="task" if is_task and not is_question else ("question" if is_question else "chatter"),
+                ai_confidence=0.20,
             )
 
     async def answer_user_query(self, query: str, context_messages: list) -> str:
@@ -364,5 +378,3 @@ Format with clean bullet points and emojis if helpful."""
         except Exception as e:
             logger.error(f"Error answering user query via LLM: {e}")
             return f"⚠️ Could not query AI model: {e}\n\nHere are recent messages:\n" + "\n".join(msgs_summary[:5])
-
-
