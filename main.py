@@ -31,6 +31,7 @@ from config import config
 from app.core.models import IncomingMessage, PriorityClassification
 from app.priority.prefilter import evaluate_prefilter
 from app.priority.classifier import AIClassifier
+from app.priority.situations import SituationLinker
 from app.telegram.notifier import Notifier
 from app.priority.digest import DigestEngine
 from app.telegram.scheduler import DigestScheduler
@@ -65,6 +66,7 @@ class TelegramPriorityApp:
             raise RuntimeError("MongoDB is required: set MONGO_URI before starting the assistant")
         self.db = MongoMessageDatabase(self.cfg.mongo_uri, self.cfg.mongo_database)
         self.classifier = AIClassifier(self.cfg)
+        self.situation_linker = SituationLinker(self.cfg)
         self.notifier = Notifier(self.cfg)
         self.digest_engine = DigestEngine(self.db)
         self.scheduler: Optional[DigestScheduler] = None
@@ -237,6 +239,21 @@ class TelegramPriorityApp:
             self._last_alert_time_by_chat[msg.chat_id] = now
 
         record_id = await self.db.save_message(msg, cls, is_prefiltered=False, alert_sent=should_alert)
+
+        # 3b. Situation fusion: fold this message into a persistent, evolving
+        # issue instead of leaving it as an unrelated scored message. Only
+        # for messages that could plausibly be part of an ongoing issue --
+        # chatter, questions, and P3 noise never create or touch one.
+        if self.situation_linker.eligible(cls):
+            try:
+                open_situations = await self.db.get_open_situations(msg.chat_id, limit=5)
+                decision = await self.situation_linker.link(msg, cls, open_situations)
+                if decision.action in {"continue", "resolve"} and decision.situation_id:
+                    await self.db.update_situation(decision.situation_id, msg, decision, cls)
+                else:
+                    await self.db.create_situation(msg, decision, cls)
+            except Exception:
+                logger.exception(f"Situation linking failed for record #{record_id}")
 
         # 4. Dispatch Instant Notification if high priority
         if should_alert:
@@ -812,6 +829,63 @@ class TelegramPriorityApp:
 
             await safe_edit_or_respond(event, "\n".join(lines), get_groups_menu(groups))
 
+        async def render_situations_view(event):
+            situations = await self.db.list_situations(limit=20, allowed_chat_ids=self.focused_chat_ids())
+            header = ["🔥 <b>Situations</b>", "<i>Issues fused from multiple messages, not a raw message list.</i>", "━━━━━━━━━━━━━━━━━━━━━━"]
+            if not situations:
+                await safe_edit_or_respond(event, "\n".join(header) + "\n\n🟢 <i>Nothing open right now.</i>", get_main_menu())
+                return
+            priority_icon = {"P0": "🚨", "P1": "🔴", "P2": "🟡", "P3": "🟢"}
+            lines = list(header)
+            buttons, row = [], []
+            for s in situations[:10]:
+                icon = priority_icon.get(s.priority, "🟡")
+                guest = " 🧑‍🤝‍🧑" if s.guest_affected else ""
+                lines.append(f"\n{icon} <b>{escape(clip_text(s.title, 60))}</b>{guest}")
+                lines.append(f"  <i>{escape(clip_text(s.chat_title, 40))} · {s.message_count} message(s) · updated {escape(s.last_update_at[:16])}</i>")
+                if s.current_action:
+                    lines.append(f"  👉 {escape(clip_text(s.current_action, 90))}")
+                short_title = (s.title[:14].rstrip() + "…") if len(s.title) > 15 else s.title
+                row.append(Button.inline(f"{icon} {short_title}", data=f"situation_{s.id}".encode()))
+                if len(row) == 2:
+                    buttons.append(row)
+                    row = []
+            if row:
+                buttons.append(row)
+            buttons.append([Button.inline("🏠 Home", data=b"btn_menu")])
+            await safe_edit_or_respond(event, "\n".join(lines), buttons)
+
+        async def render_situation_detail_view(event, situation_id: int):
+            situation = await self.db.get_situation(situation_id)
+            if not situation:
+                await safe_edit_or_respond(event, "🔥 That situation could not be found.", get_main_menu())
+                return
+            status_label = {"open": "🔴 Open", "monitoring": "🟡 Monitoring", "resolved": "🟢 Resolved"}.get(situation.status, situation.status)
+            lines = [
+                f"🔥 <b>{escape(situation.title)}</b>",
+                "━━━━━━━━━━━━━━━━━━━━━━",
+                f"<b>Status:</b> {status_label}",
+                f"<b>Priority:</b> {situation.priority}",
+                f"<b>Source:</b> {escape(situation.chat_title)}",
+                f"<b>Guest affected:</b> {'Yes' if situation.guest_affected else 'No'}",
+            ]
+            if situation.responsible:
+                lines.append(f"<b>Responsible:</b> {escape(situation.responsible)}")
+            if situation.current_action:
+                lines.append(f"<b>Current action:</b> {escape(situation.current_action)}")
+            if situation.dependency:
+                lines.append(f"<b>Dependency:</b> {escape(situation.dependency)}")
+            lines.append(f"<b>Started:</b> {escape(situation.started_at[:16])}")
+            lines.append(f"<b>Last update:</b> {escape(situation.last_update_at[:16])}")
+            lines.append(f"<b>Messages linked:</b> {situation.message_count}")
+            if situation.last_message_link:
+                lines.append(f"<b>Latest source:</b> <a href=\"{escape(situation.last_message_link)}\">Open in Telegram</a>")
+            buttons = []
+            if situation.status != "resolved":
+                buttons.append([Button.inline("✅ Mark resolved", data=f"situationresolve_{situation.id}".encode())])
+            buttons.append([Button.inline("🔥 All Situations", data=b"btn_situations"), Button.inline("🏠 Home", data=b"btn_menu")])
+            await safe_edit_or_respond(event, "\n".join(lines), buttons)
+
         async def render_memory_view(event):
             user_id = getattr(event, "sender_id", None)
             if user_id is None:
@@ -886,9 +960,10 @@ class TelegramPriorityApp:
                 event,
                 "⋯ <b>More</b>\n\nChoose an additional workspace view.",
                 [
-                    [Button.inline("💬 Sources", data=b"btn_groups"), Button.inline("🔐 Access", data=b"btn_access")],
-                    [Button.inline("🧠 Knowledge", data=b"btn_memory"), Button.inline("📊 Reports", data=b"btn_stats")],
-                    [Button.inline("⚙️ Settings", data=b"btn_setup"), Button.inline("🏠 Home", data=b"btn_menu")],
+                    [Button.inline("💬 Sources", data=b"btn_groups"), Button.inline("🔥 Situations", data=b"btn_situations")],
+                    [Button.inline("🔐 Access", data=b"btn_access"), Button.inline("🧠 Knowledge", data=b"btn_memory")],
+                    [Button.inline("📊 Reports", data=b"btn_stats"), Button.inline("⚙️ Settings", data=b"btn_setup")],
+                    [Button.inline("🏠 Home", data=b"btn_menu")],
                 ],
             )
 
@@ -1748,6 +1823,11 @@ class TelegramPriorityApp:
                 await render_groups_view(event)
                 return
 
+            # 3a. Situations: issues fused from multiple messages, not raw message list
+            if text_lower in {"/situations", "situations", "🔥 situations"}:
+                await render_situations_view(event)
+                return
+
             # 4. Instant Summary / Digest command
             if (
                 text_lower.startswith(("/digest", "/summary"))
@@ -2081,6 +2161,24 @@ class TelegramPriorityApp:
                 chat_id = int(data.decode().split("_")[1])
                 await event.answer("Opening chat...")
                 await render_single_chat_view(event, chat_id)
+
+            elif data == b"btn_situations":
+                await event.answer("Loading situations...")
+                await render_situations_view(event)
+
+            elif data.startswith(b"situationresolve_"):
+                situation_id = int(data.decode().split("_", 1)[1])
+                if callback_user_id != self.business_access.owner_id:
+                    await event.answer("Only the owner can resolve situations", alert=True)
+                    return
+                await self.db.resolve_situation(situation_id)
+                await event.answer("Marked resolved")
+                await render_situation_detail_view(event, situation_id)
+
+            elif data.startswith(b"situation_"):
+                situation_id = int(data.decode().split("_", 1)[1])
+                await event.answer("Opening situation...")
+                await render_situation_detail_view(event, situation_id)
 
             elif data == b"btn_digest":
                 await event.answer("Updating summary...")

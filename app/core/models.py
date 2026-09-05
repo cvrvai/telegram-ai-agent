@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 PriorityLevel = Literal["P0", "P1", "P2", "P3"]
 MessageType = Literal["task", "update", "question", "decision", "waiting", "blocker", "chatter", "unknown"]
+SituationStatus = Literal["open", "monitoring", "resolved"]
 
 
 class PriorityClassification(BaseModel):
@@ -110,6 +111,49 @@ class MessageRecord(BaseModel):
     alert_sent: bool = False
     digest_sent: bool = False
     created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
+class Situation(BaseModel):
+    """A living record fusing related messages into one tracked issue.
+
+    Unlike PriorityClassification, which scores one message in isolation,
+    a Situation persists across many messages and is updated in place as
+    new information arrives -- the same room-AC-problem thread stays one
+    record with an evolving status instead of five unrelated P1 alerts.
+    """
+
+    id: Optional[int] = None
+    chat_id: int
+    chat_title: str
+    title: str
+    status: SituationStatus = "open"
+    priority: PriorityLevel = "P2"
+    summary: str = ""
+    current_action: Optional[str] = None
+    dependency: Optional[str] = None
+    guest_affected: bool = False
+    responsible: Optional[str] = None
+    message_count: int = 1
+    source_message_ids: list[int] = Field(default_factory=list)
+    last_message_link: Optional[str] = None
+    started_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    last_update_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    resolved_at: Optional[str] = None
+
+
+class SituationDecision(BaseModel):
+    """Structured output from SituationLinker: how a new message relates to
+    the open situations it was shown."""
+
+    action: Literal["new", "continue", "resolve"] = "new"
+    situation_id: Optional[int] = None
+    title: Optional[str] = None
+    status: SituationStatus = "open"
+    current_action: Optional[str] = None
+    dependency: Optional[str] = None
+    guest_affected: bool = False
+    responsible: Optional[str] = None
+    reason: str = ""
 
 
 class DigestStats(BaseModel):

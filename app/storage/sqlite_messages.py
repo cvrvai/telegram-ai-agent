@@ -2,9 +2,33 @@
 
 from __future__ import annotations
 
+import json
+
 import aiosqlite
 from typing import List, Optional, Dict, Any
-from app.core.models import MessageRecord, DigestStats, PriorityClassification, IncomingMessage
+from app.core.models import MessageRecord, DigestStats, PriorityClassification, IncomingMessage, Situation, SituationDecision
+
+
+def _situation_from_row(row: aiosqlite.Row) -> Situation:
+    return Situation(
+        id=row["id"],
+        chat_id=row["chat_id"],
+        chat_title=row["chat_title"] or "Chat",
+        title=row["title"] or "",
+        status=row["status"] or "open",
+        priority=row["priority"] or "P2",
+        summary=row["summary"] or "",
+        current_action=row["current_action"],
+        dependency=row["dependency"],
+        guest_affected=bool(row["guest_affected"]),
+        responsible=row["responsible"],
+        message_count=int(row["message_count"] or 1),
+        source_message_ids=json.loads(row["source_message_ids"] or "[]"),
+        last_message_link=row["last_message_link"],
+        started_at=row["started_at"] or "",
+        last_update_at=row["last_update_at"] or "",
+        resolved_at=row["resolved_at"],
+    )
 
 
 def _chat_scope(allowed_chat_ids: Optional[set[int]], prefix: str = " AND ") -> tuple[str, list[int]]:
@@ -75,6 +99,33 @@ class Database:
                     p3_count INTEGER NOT NULL,
                     created_at TEXT NOT NULL
                 )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS situations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    chat_title TEXT,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    priority TEXT NOT NULL DEFAULT 'P2',
+                    summary TEXT,
+                    current_action TEXT,
+                    dependency TEXT,
+                    guest_affected INTEGER DEFAULT 0,
+                    responsible TEXT,
+                    message_count INTEGER DEFAULT 1,
+                    source_message_ids TEXT NOT NULL DEFAULT '[]',
+                    last_message_link TEXT,
+                    started_at TEXT NOT NULL,
+                    last_update_at TEXT NOT NULL,
+                    resolved_at TEXT
+                )
+            """)
+
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_situations_chat_status
+                ON situations(chat_id, status, last_update_at)
             """)
 
             await db.commit()
@@ -461,5 +512,102 @@ class Database:
                 "alerts_sent": row["alerts_sent"] or 0,
                 "pending_digest": row["pending_digest"] or 0,
             }
+
+    async def get_open_situations(self, chat_id: int, limit: int = 5) -> List[Situation]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM situations WHERE chat_id = ? AND status IN ('open','monitoring') ORDER BY last_update_at DESC LIMIT ?",
+                (chat_id, limit),
+            )
+            return [_situation_from_row(row) for row in await cursor.fetchall()]
+
+    async def create_situation(self, msg: IncomingMessage, decision: SituationDecision, cls: PriorityClassification) -> int:
+        now = msg.date.isoformat()
+        title = decision.title or cls.summary[:120] or msg.text[:120]
+        status = decision.status if decision.status != "resolved" else "open"
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "INSERT INTO situations (chat_id, chat_title, title, status, priority, summary, current_action, "
+                "dependency, guest_affected, responsible, message_count, source_message_ids, last_message_link, "
+                "started_at, last_update_at, resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    msg.chat_id, msg.chat_title, title, status, cls.priority, cls.summary,
+                    decision.current_action or cls.action, decision.dependency,
+                    1 if decision.guest_affected else 0, decision.responsible or cls.category or msg.chat_title,
+                    1, json.dumps([msg.message_id]), msg.message_link, now, now, None,
+                ),
+            )
+            await db.commit()
+            return cursor.lastrowid
+
+    async def update_situation(self, situation_id: int, msg: IncomingMessage, decision: SituationDecision, cls: PriorityClassification) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM situations WHERE id = ?", (situation_id,))
+            existing = await cursor.fetchone()
+            if not existing:
+                return
+            source_ids = json.loads(existing["source_message_ids"] or "[]")
+            if msg.message_id not in source_ids:
+                source_ids.append(msg.message_id)
+            source_ids = source_ids[-20:]
+            status = "resolved" if decision.action == "resolve" else decision.status
+            priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+            priority = cls.priority if priority_rank.get(cls.priority, 3) < priority_rank.get(existing["priority"], 3) else existing["priority"]
+            resolved_at = msg.date.isoformat() if status == "resolved" else existing["resolved_at"]
+            await db.execute(
+                "UPDATE situations SET status=?, priority=?, summary=?, current_action=?, dependency=?, "
+                "guest_affected=?, responsible=?, message_count=?, source_message_ids=?, last_message_link=?, "
+                "last_update_at=?, resolved_at=? WHERE id=?",
+                (
+                    status, priority, cls.summary,
+                    decision.current_action or cls.action or existing["current_action"],
+                    decision.dependency if decision.dependency is not None else existing["dependency"],
+                    1 if (bool(existing["guest_affected"]) or decision.guest_affected) else 0,
+                    decision.responsible or existing["responsible"],
+                    int(existing["message_count"] or 1) + 1,
+                    json.dumps(source_ids),
+                    msg.message_link or existing["last_message_link"],
+                    msg.date.isoformat(),
+                    resolved_at,
+                    situation_id,
+                ),
+            )
+            await db.commit()
+
+    async def get_situation(self, situation_id: int) -> Optional[Situation]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM situations WHERE id = ?", (situation_id,))
+            row = await cursor.fetchone()
+            return _situation_from_row(row) if row else None
+
+    async def resolve_situation(self, situation_id: int) -> bool:
+        """Manual GM override, independent of the message-driven fusion flow."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("UPDATE situations SET status='resolved', resolved_at=? WHERE id=?", (now, situation_id))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def list_situations(self, status: Optional[str] = None, limit: int = 20, allowed_chat_ids: Optional[set[int]] = None) -> List[Situation]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            scope, scope_params = _chat_scope(allowed_chat_ids)
+            if status:
+                where, params = "status = ?", [status]
+            else:
+                where, params = "status IN ('open','monitoring')", []
+            cursor = await db.execute(
+                f"SELECT * FROM situations WHERE {where}{scope} ORDER BY last_update_at DESC",
+                [*params, *scope_params],
+            )
+            rows = [_situation_from_row(row) for row in await cursor.fetchall()]
+            priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+            # Stable sort: ties keep the last_update_at-descending SQL order.
+            rows.sort(key=lambda situation: priority_rank.get(situation.priority, 3))
+            return rows[:limit]
 
 

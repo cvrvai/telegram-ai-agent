@@ -10,7 +10,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
-from app.core.models import DigestStats, IncomingMessage, MessageRecord, PriorityClassification
+from app.core.models import DigestStats, IncomingMessage, MessageRecord, PriorityClassification, Situation, SituationDecision
 
 
 class MongoMessageDatabase:
@@ -22,6 +22,7 @@ class MongoMessageDatabase:
         self.messages = self.db["messages"]
         self.digests = self.db["digests"]
         self.counters = self.db["counters"]
+        self.situations = self.db["situations"]
 
     async def init_db(self) -> None:
         await self.client.admin.command("ping")
@@ -29,6 +30,7 @@ class MongoMessageDatabase:
         await self.messages.create_index([("digest_sent", 1), ("priority", 1), ("id", 1)])
         await self.messages.create_index([("chat_id", 1), ("id", -1)])
         await self.digests.create_index([("created_at", -1)])
+        await self.situations.create_index([("chat_id", 1), ("status", 1), ("last_update_at", -1)])
 
     async def close(self) -> None:
         self.client.close()
@@ -218,3 +220,104 @@ class MongoMessageDatabase:
             stats["alerts_sent"] += int(bool(doc.get("alert_sent")))
             stats["pending_digest"] += int(not bool(doc.get("digest_sent")))
         return stats
+
+    @staticmethod
+    def _situation(doc: Dict[str, Any]) -> Situation:
+        return Situation(
+            id=int(doc["id"]),
+            chat_id=int(doc["chat_id"]),
+            chat_title=doc.get("chat_title") or "Chat",
+            title=doc.get("title") or "",
+            status=doc.get("status") or "open",
+            priority=doc.get("priority") or "P2",
+            summary=doc.get("summary") or "",
+            current_action=doc.get("current_action"),
+            dependency=doc.get("dependency"),
+            guest_affected=bool(doc.get("guest_affected")),
+            responsible=doc.get("responsible"),
+            message_count=int(doc.get("message_count") or 1),
+            source_message_ids=list(doc.get("source_message_ids") or []),
+            last_message_link=doc.get("last_message_link"),
+            started_at=doc.get("started_at") or "",
+            last_update_at=doc.get("last_update_at") or "",
+            resolved_at=doc.get("resolved_at"),
+        )
+
+    async def get_open_situations(self, chat_id: int, limit: int = 5) -> List[Situation]:
+        cursor = self.situations.find({"chat_id": chat_id, "status": {"$in": ["open", "monitoring"]}}).sort("last_update_at", -1).limit(limit)
+        return [self._situation(doc) async for doc in cursor]
+
+    async def create_situation(self, msg: IncomingMessage, decision: SituationDecision, cls: PriorityClassification) -> int:
+        record_id = await self._next_id()
+        now = msg.date.isoformat()
+        await self.situations.insert_one(
+            {
+                "id": record_id,
+                "chat_id": msg.chat_id,
+                "chat_title": msg.chat_title,
+                "title": decision.title or cls.summary[:120] or msg.text[:120],
+                "status": decision.status if decision.status != "resolved" else "open",
+                "priority": cls.priority,
+                "summary": cls.summary,
+                "current_action": decision.current_action or cls.action,
+                "dependency": decision.dependency,
+                "guest_affected": decision.guest_affected,
+                "responsible": decision.responsible or cls.category or msg.chat_title,
+                "message_count": 1,
+                "source_message_ids": [msg.message_id],
+                "last_message_link": msg.message_link,
+                "started_at": now,
+                "last_update_at": now,
+                "resolved_at": None,
+            }
+        )
+        return record_id
+
+    async def update_situation(self, situation_id: int, msg: IncomingMessage, decision: SituationDecision, cls: PriorityClassification) -> None:
+        existing = await self.situations.find_one({"id": situation_id})
+        if not existing:
+            return
+        source_ids = list(existing.get("source_message_ids") or [])
+        if msg.message_id not in source_ids:
+            source_ids.append(msg.message_id)
+        source_ids = source_ids[-20:]
+        status = "resolved" if decision.action == "resolve" else decision.status
+        priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+        priority = cls.priority if priority_rank.get(cls.priority, 3) < priority_rank.get(existing.get("priority", "P3"), 3) else existing.get("priority")
+        update = {
+            "status": status,
+            "priority": priority,
+            "summary": cls.summary,
+            "current_action": decision.current_action or cls.action or existing.get("current_action"),
+            "dependency": decision.dependency if decision.dependency is not None else existing.get("dependency"),
+            "guest_affected": bool(existing.get("guest_affected")) or decision.guest_affected,
+            "responsible": decision.responsible or existing.get("responsible"),
+            "message_count": int(existing.get("message_count") or 1) + 1,
+            "source_message_ids": source_ids,
+            "last_message_link": msg.message_link or existing.get("last_message_link"),
+            "last_update_at": msg.date.isoformat(),
+        }
+        if status == "resolved":
+            update["resolved_at"] = msg.date.isoformat()
+        await self.situations.update_one({"id": situation_id}, {"$set": update})
+
+    async def get_situation(self, situation_id: int) -> Optional[Situation]:
+        doc = await self.situations.find_one({"id": situation_id})
+        return self._situation(doc) if doc else None
+
+    async def resolve_situation(self, situation_id: int) -> bool:
+        """Manual GM override, independent of the message-driven fusion flow."""
+        now = datetime.now(timezone.utc).isoformat()
+        result = await self.situations.update_one({"id": situation_id}, {"$set": {"status": "resolved", "resolved_at": now}})
+        return result.matched_count > 0
+
+    async def list_situations(self, status: Optional[str] = None, limit: int = 20, allowed_chat_ids: Optional[set[int]] = None) -> List[Situation]:
+        query: Dict[str, Any] = {"status": status} if status else {"status": {"$in": ["open", "monitoring"]}}
+        if allowed_chat_ids is not None:
+            query["chat_id"] = {"$in": [int(chat_id) for chat_id in allowed_chat_ids]}
+        cursor = self.situations.find(query).sort("last_update_at", -1).limit(max(limit, 50))
+        rows = [self._situation(doc) async for doc in cursor]
+        priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+        # Stable sort: ties keep the last_update_at-descending order from Mongo.
+        rows.sort(key=lambda situation: priority_rank.get(situation.priority, 3))
+        return rows[:limit]
