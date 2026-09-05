@@ -51,6 +51,8 @@ def _create_event_sync(
     description: str,
     attendees: Optional[list[str]],
     tz: str,
+    location: Optional[str],
+    add_video_call: bool,
 ) -> dict[str, Any]:
     service = _service(credentials)
     body: dict[str, Any] = {
@@ -61,17 +63,31 @@ def _create_event_sync(
     }
     if attendees:
         body["attendees"] = [{"email": email} for email in attendees]
-    created = (
-        service.events()
-        .insert(calendarId="primary", body=body, sendUpdates="all" if attendees else "none")
-        .execute()
-    )
+    if location:
+        body["location"] = location
+    insert = service.events().insert(calendarId="primary", body=body, sendUpdates="all" if attendees else "none")
+    if add_video_call:
+        # A random requestId per call, per Google's conference-creation contract
+        # (https://developers.google.com/calendar/api/guides/create-events#video-calling) --
+        # reusing one would silently attach an existing conference instead of a new one.
+        import uuid
+
+        body["conferenceData"] = {"createRequest": {"requestId": uuid.uuid4().hex, "conferenceSolutionKey": {"type": "hangoutsMeet"}}}
+        insert = service.events().insert(calendarId="primary", body=body, sendUpdates="all" if attendees else "none", conferenceDataVersion=1)
+    created = insert.execute()
+    meet_link = None
+    for entry_point in created.get("conferenceData", {}).get("entryPoints", []):
+        if entry_point.get("entryPointType") == "video":
+            meet_link = entry_point.get("uri")
+            break
     return {
         "id": created.get("id"),
         "link": created.get("htmlLink"),
         "summary": created.get("summary"),
         "start": start,
         "end": end or start,
+        "location": created.get("location"),
+        "meet_link": meet_link,
     }
 
 
@@ -88,6 +104,8 @@ async def create_event(
     description: str = "",
     attendees: list[str] | None = None,
     timezone_name: str = "Asia/Phnom_Penh",
+    location: str | None = None,
+    add_video_call: bool = False,
 ) -> dict[str, Any]:
     return await asyncio.to_thread(
         _create_event_sync,
@@ -98,4 +116,6 @@ async def create_event(
         description=description,
         attendees=attendees,
         tz=timezone_name,
+        location=location,
+        add_video_call=add_video_call,
     )

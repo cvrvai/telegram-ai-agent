@@ -147,6 +147,10 @@ class AppConfig(BaseSettings):
     class Config:
         env_file = ".env"
         extra = "ignore"
+        # A present-but-blank value (e.g. `OWNER_USER_ID=`, exactly what
+        # .env.example documents for every optional field) must fall back to
+        # the field default instead of failing int/optional validation.
+        env_ignore_empty = True
 
 
 # Global settings instance

@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Protocol
 
 from app.ai.provider import AIProvider
 
 from .context import AgentContext, ContextRetriever
-from .errors import AgentError
+from .errors import AgentError, ToolValidationError, UnknownToolError
 from .policy import PolicyEngine
 from .registry import ToolRegistry
+
+logger = logging.getLogger("agent.runtime")
 from .schemas import AgentDecision, RiskLevel
 
 
@@ -29,7 +32,7 @@ class ProviderDecisionPlanner:
     async def decide(self, user_text: str, context: AgentContext, tool_names: tuple[str, ...], tool_results: list[dict[str, Any]]) -> AgentDecision:
         specs = self.registry.specifications() if self.registry else []
         if hasattr(self.provider, "decide") and self.answer_callable:
-            response = await self.answer_callable(user_text, context.prompt_lines(), specs, tool_results)
+            response = await self.answer_callable(user_text, context.prompt_lines(include_turns=False), specs, tool_results, context.history_messages())
             return AgentDecision.model_validate(self._decode_decision(response.text))
         instructions = (
             "You are a conversational assistant. Return ONLY valid JSON matching this contract: "
@@ -73,12 +76,12 @@ class ProviderDecisionPlanner:
 
 
 class AgentRuntime:
-    def __init__(self, service: Any, repository: Any, provider: AIProvider, message_database: Any = None, registry: ToolRegistry | None = None, policy: PolicyEngine | None = None, max_rounds: int = 4, timeout_seconds: float = 45.0, allowed_chat_ids_provider: Callable[[], set[int]] | None = None) -> None:
+    def __init__(self, service: Any, repository: Any, provider: AIProvider, message_database: Any = None, registry: ToolRegistry | None = None, policy: PolicyEngine | None = None, max_rounds: int = 4, timeout_seconds: float = 45.0, allowed_chat_ids_provider: Callable[[], set[int]] | None = None, google_account: Any = None) -> None:
         self.service = service
         self.repository = repository
         self.registry = registry or ToolRegistry()
         self.policy = policy or PolicyEngine()
-        self.retriever = ContextRetriever(service, repository, message_database, allowed_chat_ids_provider)
+        self.retriever = ContextRetriever(service, repository, message_database, allowed_chat_ids_provider, google_account=google_account)
         self.planner = ProviderDecisionPlanner(provider, self._call_provider, self.registry)
         self.telegram = None
         self.max_rounds = max(1, max_rounds)
@@ -113,7 +116,15 @@ class AgentRuntime:
                 if call_key in seen_calls:
                     return "I stopped because the same action was requested repeatedly."
                 seen_calls.add(call_key)
-                tool = self.registry.get(planned.tool_name or "")
+                try:
+                    tool = self.registry.get(planned.tool_name or "")
+                except UnknownToolError:
+                    # Error-as-input: name the mistake and let the model pick a
+                    # real tool, rather than aborting the whole turn.
+                    tool_results.append({"tool": planned.tool_name or "unknown", "arguments": planned.arguments,
+                                         "result": {"ok": False, "error": f"No tool named {planned.tool_name!r}. Available tools: {', '.join(self.registry.names())}."},
+                                         "policy": "INVALID"})
+                    continue
                 permission_allowed = self.service.access.decide(actor_id, chat_id, chat_type).allowed
                 if tool.required_permission == "source.read":
                     permission_allowed = permission_allowed and actor_id == self.service.access.owner_id and chat_type == "private"
@@ -124,7 +135,18 @@ class AgentRuntime:
                     return policy.reason
                 if policy.outcome == "REQUIRE_APPROVAL":
                     return "This action requires approval before it can be performed."
-                result = await self.registry.execute(tool.name, planned.arguments, context)
+                try:
+                    result = await self.registry.execute(tool.name, planned.arguments, context)
+                except ToolValidationError as exc:
+                    # Hand the model its own validation error so it can correct
+                    # the arguments itself. The alternative -- guessing what it
+                    # meant with hardcoded synonym tables -- only ever covers
+                    # the phrasings we thought of, and silently fails on the rest.
+                    logger.info("Tool %s rejected the model's arguments; returning the error for self-correction", tool.name)
+                    await self._audit(actor_id, tool.name, planned.arguments, policy.outcome, False)
+                    tool_results.append({"tool": tool.name, "arguments": planned.arguments,
+                                         "result": {"ok": False, "error": str(exc)}, "policy": policy.outcome})
+                    continue
                 payload = result.model_dump(mode="json")
                 await self._audit(actor_id, tool.name, planned.arguments, policy.outcome, payload.get("ok"))
                 tool_results.append({"tool": tool.name, "arguments": planned.arguments, "result": payload, "policy": policy.outcome})
@@ -136,7 +158,12 @@ class AgentRuntime:
                     if isinstance(project, dict) and project.get("id"):
                         session["active_project_id"] = project["id"]
             return "I could not complete that request within the safe tool limit."
-        except (AgentError, ValueError, KeyError):
+        except (AgentError, ValueError, KeyError) as exc:
+            # Otherwise this failure mode has zero trace anywhere -- not in
+            # the reply, not in the logs -- which is how a schema mismatch
+            # like this one went undiagnosed until the Mongo audit log was
+            # queried by hand.
+            logger.warning("Agent turn failed for actor %s: %s: %s", actor_id, type(exc).__name__, exc)
             return "I couldn't complete that step. Please clarify the chat or item you mean and try again."
 
     async def _remember_turn(self, actor_id: int, chat_id: int, user_text: str, response: str) -> None:
@@ -153,12 +180,12 @@ class AgentRuntime:
             return context.active_work_item is not None
         return True
 
-    async def _call_provider(self, prompt: str, context: list[str], tools=None, tool_results=None) -> Any:
+    async def _call_provider(self, prompt: str, context: list[str], tools=None, tool_results=None, history=None) -> Any:
         """Call the configured provider through the existing usage budget."""
         budget = getattr(self.service, "budget", None)
         async def call():
             if tools is not None:
-                return await self.planner.provider.decide(prompt, context, tools, tool_results or [])
+                return await self.planner.provider.decide(prompt, context, tools, tool_results or [], history=history)
             return await self.planner.provider.answer(prompt, context)
         if budget is None:
             return await call()

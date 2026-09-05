@@ -1263,6 +1263,7 @@ class TelegramPriorityApp:
             message_database=self.db, registry=build_registry(telegram=True),
             timeout_seconds=self.cfg.ai_request_timeout_seconds,
             allowed_chat_ids_provider=self.focused_chat_ids,
+            google_account=self.google_account,
         )
         sources = TelegramSources(lambda: self.telethon_client, self.business_access.owner_id,
                                   agent_state, self.focused_chat_ids, self.business_access)
@@ -2190,17 +2191,30 @@ class TelegramPriorityApp:
                                     from app.integrations.google_gmail import send_message as google_send_message
                                     await google_send_message(google_credentials, to=payload["to"], subject=payload["subject"], body=payload["body"])
                                     confirmation = "✅ Email sent via Gmail after approval."
-                                else:
+                                elif self.integrations.configured("email"):
                                     await self.integrations.send_email(**payload)
                                     confirmation = "✅ Email sent after approval."
+                                else:
+                                    confirmation = "⚠️ Approved, but Gmail is not connected yet. Send /connectgoogle first, then try again."
                             elif action.get("action_type") == "calendar":
                                 if google_credentials:
                                     from app.integrations.google_calendar import create_event as google_create_event
-                                    created = await google_create_event(google_credentials, summary=payload["title"], start=payload["start"], end=payload.get("end"))
+                                    attendee_email = payload.get("attendee_email")
+                                    created = await google_create_event(
+                                        google_credentials, summary=payload["title"], start=payload["start"], end=payload.get("end"),
+                                        location=payload.get("location"), add_video_call=payload.get("meeting_type") == "online",
+                                        attendees=[attendee_email] if attendee_email else None,
+                                    )
                                     confirmation = f"✅ Calendar event created: <a href=\"{escape(created['link'] or '')}\">{escape(created['summary'] or '')}</a>"
-                                else:
-                                    await self.integrations.create_calendar_event(**payload)
+                                    if created.get("meet_link"):
+                                        confirmation += f"\n🎥 Google Meet: <a href=\"{escape(created['meet_link'])}\">{escape(created['meet_link'])}</a>"
+                                elif self.integrations.configured("calendar"):
+                                    # Extracted, not **payload -- the agent-drafted payload can carry
+                                    # extra keys (meeting_type, location, attendee_email) this stub doesn't accept.
+                                    await self.integrations.create_calendar_event(title=payload["title"], start=payload["start"], end=payload.get("end"))
                                     confirmation = "✅ Calendar event created after approval."
+                                else:
+                                    confirmation = "⚠️ Approved, but Google Calendar is not connected yet. Send /connectgoogle first, then try again."
                             elif action.get("action_type") == "crm":
                                 await self.integrations.create_crm_record(**payload)
                                 confirmation = "✅ CRM record created after approval."

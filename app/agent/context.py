@@ -23,15 +23,24 @@ class AgentContext:
     message_database: Any = None
     allowed_chat_ids: set[int] = field(default_factory=set)
     telegram: Any = None
+    google_account: Any = None
 
-    def prompt_lines(self) -> list[str]:
+    def history_messages(self) -> list[dict[str, Any]]:
+        """Conversation turns as role-tagged messages for providers that take
+        real multi-turn input, rather than a flattened reference blob."""
+        return [{"role": row.get("role", "user"), "content": str(row.get("content", ""))[:2000]} for row in self.recent_turns[-8:]]
+
+    def prompt_lines(self, include_turns: bool = True) -> list[str]:
         lines = [f"Actor: {self.actor_id}"]
         lines.append(f"Authorized source chat IDs: {sorted(self.allowed_chat_ids)}")
         if self.session.get("last_source_hint"):
             lines.append(f"Last selected Telegram source: {self.session['last_source_hint']}")
         if self.session.get("last_window"):
             lines.append(f"Last requested date window: {self.session['last_window']}")
-        lines.extend(f"Previous {row.get('role', 'user')}: {str(row.get('content', ''))[:2000]}" for row in self.recent_turns[-8:])
+        if include_turns:
+            # Only for providers fed a single flat context block; the native
+            # path passes these as real messages via history_messages().
+            lines.extend(f"Previous {row.get('role', 'user')}: {str(row.get('content', ''))[:2000]}" for row in self.recent_turns[-8:])
         if self.active_project:
             lines.append(f"Active project: {self.active_project.get('project_key') or self.active_project.get('name')}")
         if self.active_work_item:
@@ -48,14 +57,15 @@ class AgentContext:
 
 
 class ContextRetriever:
-    def __init__(self, assistant_service: Any, repository: Any, message_database: Any = None, allowed_chat_ids_provider: Callable[[], set[int]] | None = None) -> None:
+    def __init__(self, assistant_service: Any, repository: Any, message_database: Any = None, allowed_chat_ids_provider: Callable[[], set[int]] | None = None, google_account: Any = None) -> None:
         self.service = assistant_service
         self.repository = repository
         self.message_database = message_database
         self.allowed_chat_ids_provider = allowed_chat_ids_provider
+        self.google_account = google_account
 
     async def retrieve(self, actor_id: int, chat_id: int, chat_type: str, query: str, session: dict[str, Any] | None = None) -> AgentContext:
-        context = AgentContext(actor_id, chat_id, chat_type, session=session if session is not None else {}, service=self.service, repository=self.repository, message_database=self.message_database)
+        context = AgentContext(actor_id, chat_id, chat_type, session=session if session is not None else {}, service=self.service, repository=self.repository, message_database=self.message_database, google_account=self.google_account)
         # Owner-selected sources are not grants to other bot members or groups.
         if self.allowed_chat_ids_provider is not None and actor_id == self.service.access.owner_id and chat_type == "private":
             context.allowed_chat_ids = {int(value) for value in self.allowed_chat_ids_provider()}

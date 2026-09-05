@@ -104,6 +104,10 @@ class TelegramConversation:
                     progress = await event.respond("Reading the selected chat…" if resume else "Thinking…", parse_mode=None)
                     session = await self.store.load_session(*key)
                     session["_run_id"] = record["_id"]
+                    # Cleared on load, not just after use: a stale marker from
+                    # a run that never reached the button-rendering step below
+                    # must never resurface on a later, unrelated turn.
+                    session.pop("pending_draft_action", None)
                     initial = []
 
                     async def work():
@@ -127,7 +131,17 @@ class TelegramConversation:
                         if '"tool_call"' in answer or '"tool_name"' in answer:
                             answer = "The AI returned an invalid reply. Please try again."
                         parts = list(chunks(answer)) or ["I couldn't generate a response."]
-                        await progress.edit(parts[0], parse_mode=None)
+                        # A tool this turn (create_calendar_event, send_email) may have
+                        # drafted a pending action -- attach the same Approve/Reject
+                        # buttons the manual /event and /email commands use, so the
+                        # owner confirms through the one existing approval path.
+                        pending_draft = session.pop("pending_draft_action", None)
+                        buttons = None
+                        if pending_draft:
+                            action_id = pending_draft["id"]
+                            buttons = [[Button.inline("✅ Approve", data=f"action_approve_{action_id}".encode()),
+                                        Button.inline("❌ Reject", data=f"action_deny_{action_id}".encode())]]
+                        await progress.edit(parts[0], parse_mode=None, buttons=buttons)
                         for part in parts[1:]:
                             await event.respond(part, parse_mode=None)
         except InteractionRequired as interaction:

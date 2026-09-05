@@ -5,6 +5,16 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
+from app.integrations.google_tools import (
+    CreateEventInput,
+    ListEventsInput as GoogleListEventsInput,
+    SendEmailInput,
+    create_calendar_event,
+    list_upcoming_events,
+    send_email,
+    summarize_inbox,
+)
+
 from .registry import ToolRegistry
 from .resolution import resolve_person, resolve_project, resolve_work_item
 from .schemas import RiskLevel, ToolDefinition
@@ -189,6 +199,14 @@ def build_registry(telegram: bool = False) -> ToolRegistry:
         ToolDefinition(name="get_due_soon", description="List open work due within 48 hours.", input_schema=LimitInput, output_schema=JsonOutput, risk=read, required_permission="work.read", side_effect=False, approval_required=False, handler=get_due_soon),
         ToolDefinition(name="search_messages", description="Search only approved source messages.", input_schema=HintInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=False, approval_required=False, handler=search_messages),
         ToolDefinition(name="get_management_brief", description="Get the current management brief (critical/pending situations, pending approvals) or a 'what happened' retrospective for today/yesterday/this week/this month.", input_schema=BriefInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=False, approval_required=False, handler=get_management_brief),
+        ToolDefinition(name="list_upcoming_events", description="List the owner's upcoming Google Calendar events.", input_schema=GoogleListEventsInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=False, approval_required=False, handler=list_upcoming_events),
+        ToolDefinition(name="summarize_inbox", description="List the owner's recent Gmail messages so they can be summarized.", input_schema=GoogleListEventsInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=False, approval_required=False, handler=summarize_inbox),
+        # risk=read (not SAFE_WRITE) deliberately: these only create a pending
+        # draft the owner must still approve -- nothing external happens yet
+        # -- and SAFE_WRITE tools are filtered out of the Telegram-native
+        # registry below, which would otherwise make these unreachable.
+        ToolDefinition(name="create_calendar_event", description="Prepare a Google Calendar event for the owner to approve; does not create it directly. An online meeting automatically gets a Google Meet link; ask the user which they mean if it isn't clear from their message.", input_schema=CreateEventInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=True, approval_required=False, handler=create_calendar_event),
+        ToolDefinition(name="send_email", description="Prepare an email for the owner to approve; does not send it directly.", input_schema=SendEmailInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=True, approval_required=False, handler=send_email),
         ToolDefinition(name="search_memory", description="Search the user's saved assistant conversation memory.", input_schema=HintInput, output_schema=JsonOutput, risk=read, required_permission="memory.read", side_effect=False, approval_required=False, handler=search_memory),
         ToolDefinition(name="change_work_status", description="Move a work item through the legal workflow.", input_schema=StatusInput, output_schema=JsonOutput, risk=write, required_permission="work.update", side_effect=True, approval_required=False, handler=change_work_status),
         ToolDefinition(name="change_priority", description="Change a work item's P0-P3 priority.", input_schema=PriorityInput, output_schema=JsonOutput, risk=write, required_permission="work.update", side_effect=True, approval_required=False, handler=change_priority),

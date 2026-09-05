@@ -27,12 +27,16 @@ Instant Telegram Push Alert     Periodic 3-Tier Digest
 - 🎧 **Userbot Ingestion (`Telethon`):** Listens across all your personal 1-on-1 direct messages, university channels, and private group chats.
 - 🧠 **Context-Aware AI:** Distinguishes between critical work (*"Meeting moved to 3 PM"* in CloudKH group $\rightarrow$ **P1**) and casual banter (*"Match moved to 3 PM"* in friends group $\rightarrow$ **P3**).
 - ⚡ **Zero-Token Pre-Filter:** Automatically intercepts stickers, reactions, and one-word messages without consuming AI API credits.
-- 📱 **Interactive Telegram Dashboard:** Chat directly with your bot in Telegram with one-tap buttons:
-  - `[ 📋 Generate Digest Now ]`
-  - `[ 🔴 Priority Messages ]`
-  - `[ 📊 System Stats ]`
+- 🔥 **Situation Understanding:** Fuses related messages into one tracked issue with a status instead of scoring each message alone — five messages about the same broken AC become one situation, not five unrelated alerts. See [Situations](#situations).
+- 📋 **Management Briefs & To-Do:** `/brief`, `/today`, `/yesterday`, `/week`, `/month` answer "what happened?" and "what do I need to do?" from tracked situations, not a fresh summarization pass each time.
+- ⚠️ **Repeated-Issue Alerts:** A one-time warning when a chat reports the same kind of problem three or more times in a week.
+- 📅 **Google Calendar + Gmail:** Real OAuth-connected Calendar event creation and Gmail summarize/send, approved by the owner before anything is created or sent. See [Google Calendar + Gmail](#google-calendar--gmail).
+- 📎 **Document Intelligence:** PDF, Excel, Word (`.docx`), and OCR for images/scanned documents (menus, invoices, quotations) through the configured AI provider.
+- 📊 **Weekly Meeting Deck:** `/weeklyreport` generates a 9-slide `.pptx` from the week's tracked situations and pending approvals.
+- 🗂️ **Work Management:** Projects, tasks with a real workflow status machine, dependencies, and Critical Path Method scheduling — see [Business assistant structure](#business-assistant-structure).
+- 🤖 **Conversational Agent:** A bounded, policy-checked tool-calling assistant for ordinary natural-language requests, not just slash commands — see [`docs/agent-architecture.md`](docs/agent-architecture.md).
+- 📱 **Interactive Telegram Dashboard:** Chat directly with your bot in Telegram with one-tap buttons for digests, priority tiers, situations, briefs, projects, and more.
 - 💬 **Ask AI About Your Chats:** Type any question to your bot (e.g. *"What did my lecturer announce today?"* or *"Any updates on CloudKH?"*) and get instant answers based on captured message context.
-- 📎 **Business Documents:** Analyze PDF, TXT, CSV, JSON, YAML, XLSX, XLS, and common image files through the configured AI provider.
 - 🔌 **Ollama AI:** Uses Ollama's OpenAI-compatible API for local models and Ollama Cloud models.
 
 ---
