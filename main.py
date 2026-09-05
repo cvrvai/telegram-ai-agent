@@ -40,7 +40,7 @@ from app.services.assistant import AssistantService
 from app.bot.navigation import route, parse
 from app.usage.budget import UsageBudget, BudgetExceeded
 from app.dashboard.http import DashboardServer
-from app.integrations import IntegrationHub
+from app.integrations import IntegrationHub, GoogleAccount
 from app.agent.runtime import AgentRuntime
 from app.agent.tools import build_registry
 
@@ -91,6 +91,15 @@ class TelegramPriorityApp:
         self.integrations = IntegrationHub(
             {"email": self.cfg.email_webhook_url, "calendar": self.cfg.calendar_webhook_url, "crm": self.cfg.crm_webhook_url, "task": self.cfg.task_webhook_url},
             self.cfg.integration_secret,
+        )
+        # Google Calendar/Gmail are owner-only and, when connected, take
+        # priority over the generic webhook stub above for the same two
+        # action types (see the action_approve_ callback).
+        self.google_account = GoogleAccount(
+            self.business_repository,
+            self.cfg.google_client_id,
+            self.cfg.google_client_secret,
+            self.cfg.google_oauth_redirect_uri,
         )
         if self.cfg.ai_provider.lower() != "ollama":
             raise RuntimeError("Only Ollama is supported. Set AI_PROVIDER=ollama and configure OLLAMA_BASE_URL, OLLAMA_MODEL, and OLLAMA_API_KEY.")
@@ -284,6 +293,7 @@ class TelegramPriorityApp:
                 self.cfg.dashboard_token,
                 self.cfg.schedule_times_list,
                 self.business_access.owner_id,
+                google_account=self.google_account,
             )
             self.dashboard_thread = threading.Thread(target=self.dashboard_server.serve_forever, name="dashboard", daemon=True)
             self.dashboard_thread.start()
@@ -1584,6 +1594,80 @@ class TelegramPriorityApp:
                 except PermissionError:
                     await event.respond("🔒 Only approved users can create outbound drafts.")
                 return
+            if text_lower in {"/connectgoogle", "connect google"}:
+                if user_id != self.business_access.owner_id or not event.is_private:
+                    await event.respond("🔒 Only the owner can connect Google, from the private bot chat.")
+                    return
+                try:
+                    url = await self.google_account.connect_url(user_id)
+                    await event.respond("🔗 Connect your Google account (Calendar + Gmail):", buttons=[[Button.url("Connect Google", url)]])
+                except RuntimeError as exc:
+                    await event.respond(f"⚠️ {escape(str(exc))}", parse_mode="HTML")
+                return
+            if text_lower in {"/googlestatus", "google status"}:
+                if user_id != self.business_access.owner_id or not event.is_private:
+                    await event.respond("🔒 Only the owner can view the Google connection status.")
+                    return
+                connected = await self.google_account.is_connected(user_id)
+                await event.respond("✅ Google account connected." if connected else "⚪ Google account not connected. Use /connectgoogle.")
+                return
+            if text_lower == "/disconnectgoogle":
+                if user_id != self.business_access.owner_id or not event.is_private:
+                    await event.respond("🔒 Only the owner can disconnect Google.")
+                    return
+                await self.google_account.disconnect(user_id)
+                await event.respond("🔌 Google account disconnected.")
+                return
+            if text_lower in {"/calendar", "calendar", "📅 calendar"}:
+                if user_id != self.business_access.owner_id or not event.is_private:
+                    await event.respond("🔒 Only the owner can view the connected Google Calendar.")
+                    return
+                credentials = await self.google_account.get_credentials(user_id)
+                if not credentials:
+                    await event.respond("⚪ Google Calendar is not connected. Use /connectgoogle first.")
+                    return
+                try:
+                    from app.integrations.google_calendar import list_upcoming_events
+                    events = await list_upcoming_events(credentials, max_results=10)
+                except Exception:
+                    logger.exception("Google Calendar list failed")
+                    await event.respond("⚠️ Could not reach Google Calendar. Try /connectgoogle again if this continues.")
+                    return
+                if not events:
+                    await event.respond("📅 No upcoming events.")
+                    return
+                lines = ["📅 <b>Upcoming events</b>"] + [f"• {escape(item['summary'])} — {escape(item['start'] or '')}" for item in events]
+                await event.respond("\n".join(lines), parse_mode="HTML", buttons=get_main_menu())
+                return
+            if text_lower in {"/inbox", "inbox"}:
+                if user_id != self.business_access.owner_id or not event.is_private:
+                    await event.respond("🔒 Only the owner can view the connected Gmail inbox.")
+                    return
+                credentials = await self.google_account.get_credentials(user_id)
+                if not credentials:
+                    await event.respond("⚪ Gmail is not connected. Use /connectgoogle first.")
+                    return
+                try:
+                    from app.integrations.google_gmail import list_recent_messages
+                    messages = await list_recent_messages(credentials, max_results=10)
+                except Exception:
+                    logger.exception("Gmail list failed")
+                    await event.respond("⚠️ Could not reach Gmail. Try /connectgoogle again if this continues.")
+                    return
+                if not messages:
+                    await event.respond("📧 No unread messages.")
+                    return
+                context_lines = [f"{m['from']} — {m['subject']}: {m['snippet']}" for m in messages]
+                try:
+                    answer = await asyncio.wait_for(
+                        self.business_assistant.answer(user_id, event.chat_id, "private", "Summarize these unread emails and flag anything that needs a reply.", context_lines),
+                        timeout=self.cfg.ai_request_timeout_seconds,
+                    )
+                    await event.respond(f"📧 <b>Inbox summary</b>\n\n{answer}", parse_mode="HTML", buttons=get_main_menu())
+                except Exception:
+                    logger.exception("Inbox summarization failed")
+                    await event.respond("⚠️ Could not summarize the inbox right now.")
+                return
             if text_lower.startswith("/crm "):
                 parts = text.split(maxsplit=1)[1].split("|", 1)
                 if len(parts) != 2:
@@ -1946,12 +2030,27 @@ class TelegramPriorityApp:
                             confirmation = "✅ Message sent after approval."
                         else:
                             payload = json.loads(action["payload"])
-                            if action.get("action_type") == "email":
-                                await self.integrations.send_email(**payload)
-                                confirmation = "✅ Email sent after approval."
+                            action_type = action.get("action_type")
+                            # Google Calendar/Gmail take priority over the
+                            # generic webhook stub once the owner has
+                            # connected an account with /connectgoogle.
+                            google_credentials = await self.google_account.get_credentials(callback_user_id) if action_type in {"email", "calendar"} else None
+                            if action_type == "email":
+                                if google_credentials:
+                                    from app.integrations.google_gmail import send_message as google_send_message
+                                    await google_send_message(google_credentials, to=payload["to"], subject=payload["subject"], body=payload["body"])
+                                    confirmation = "✅ Email sent via Gmail after approval."
+                                else:
+                                    await self.integrations.send_email(**payload)
+                                    confirmation = "✅ Email sent after approval."
                             elif action.get("action_type") == "calendar":
-                                await self.integrations.create_calendar_event(**payload)
-                                confirmation = "✅ Calendar event created after approval."
+                                if google_credentials:
+                                    from app.integrations.google_calendar import create_event as google_create_event
+                                    created = await google_create_event(google_credentials, summary=payload["title"], start=payload["start"], end=payload.get("end"))
+                                    confirmation = f"✅ Calendar event created: <a href=\"{escape(created['link'] or '')}\">{escape(created['summary'] or '')}</a>"
+                                else:
+                                    await self.integrations.create_calendar_event(**payload)
+                                    confirmation = "✅ Calendar event created after approval."
                             elif action.get("action_type") == "crm":
                                 await self.integrations.create_crm_record(**payload)
                                 confirmation = "✅ CRM record created after approval."
@@ -2253,6 +2352,7 @@ def main():
             app.cfg.dashboard_token,
             app.cfg.schedule_times_list,
             app.business_access.owner_id,
+            google_account=app.google_account,
         ).serve_forever()
     elif args.command == "backfill":
         asyncio.run(run_backfill(args.days, args.limit, args.chat_id))

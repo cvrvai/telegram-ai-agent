@@ -16,9 +16,10 @@ from app.usage.budget import UsageBudget
 
 
 class DashboardServer(ThreadingHTTPServer):
-    def __init__(self, repository: BusinessRepository, budget: UsageBudget, host: str = "127.0.0.1", port: int = 3141, token: Optional[str] = None, schedules: list[str] | None = None, default_user_id: int | None = None):
+    def __init__(self, repository: BusinessRepository, budget: UsageBudget, host: str = "127.0.0.1", port: int = 3141, token: Optional[str] = None, schedules: list[str] | None = None, default_user_id: int | None = None, google_account: Optional[object] = None):
         self.dashboard_service = DashboardService(repository, budget, schedules, default_user_id)
         self.dashboard_token = token
+        self.google_account = google_account
         super().__init__((host, port), self._handler())
 
     def _handler(self):
@@ -49,11 +50,34 @@ class DashboardServer(ThreadingHTTPServer):
                     raise ValueError("request too large")
                 return json.loads(self.rfile.read(length) or b"{}")
 
+            def _google_oauth_callback(self, query: dict[str, list[str]]) -> None:
+                page = "<!doctype html><html><head><meta charset='utf-8'><title>Google connection</title></head><body style='font:16px system-ui;max-width:480px;margin:60px auto;text-align:center'>{}</body></html>"
+                if server.google_account is None:
+                    self._send(503, "text/html; charset=utf-8", page.format("<h1>Google integration is not configured.</h1>"))
+                    return
+                error = query.get("error", [""])[0]
+                if error:
+                    self._send(400, "text/html; charset=utf-8", page.format(f"<h1>Google connection cancelled</h1><p>{html.escape(error)}</p>"))
+                    return
+                code = query.get("code", [""])[0]
+                state = query.get("state", [""])[0]
+                try:
+                    asyncio.run(server.google_account.handle_callback(code, state))
+                    self._send(200, "text/html; charset=utf-8", page.format("<h1>&#9989; Google account connected</h1><p>You can close this tab and return to Telegram.</p>"))
+                except Exception as exc:
+                    self._send(400, "text/html; charset=utf-8", page.format(f"<h1>Could not connect Google</h1><p>{html.escape(str(exc))}</p>"))
+
             def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
                 parsed = urlparse(self.path)
                 query = parse_qs(parsed.query)
                 if parsed.path == "/healthz":
                     self._send(200, "application/json", '{"ok":true}')
+                    return
+                if parsed.path == "/oauth/google/callback":
+                    # Google's redirect carries no dashboard bearer token; the
+                    # one-time, single-use `state` value is the authorization
+                    # here instead (see GoogleAccount.handle_callback).
+                    self._google_oauth_callback(query)
                     return
                 if not self._authorized(query):
                     self._send(401, "application/json", '{"error":"dashboard authentication required"}')

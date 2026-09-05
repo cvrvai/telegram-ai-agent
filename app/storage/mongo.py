@@ -46,6 +46,8 @@ class MongoBusinessRepository:
         self.comments = self.db["assistant_task_comments"]
         self.status_history = self.db["work_item_status_history"]
         self.agent_audits = self.db["agent_audit_events"]
+        self.google_tokens = self.db["assistant_google_tokens"]
+        self.google_oauth_states = self.db["assistant_google_oauth_states"]
 
     async def init(self) -> None:
         """Verify connectivity and create the indexes used by the service."""
@@ -68,6 +70,9 @@ class MongoBusinessRepository:
         await self.tasks.create_index([("project_id", 1), ("status", 1)])
         await self.tasks.create_index("display_key", unique=True, sparse=True)
         await self.status_history.create_index([("work_item_id", 1), ("created_at", 1)])
+        await self.google_tokens.create_index("user_id", unique=True)
+        await self.google_oauth_states.create_index("state", unique=True)
+        await self.google_oauth_states.create_index("expires_at")
         await self.agent_audits.create_index([("actor_id", 1), ("created_at", -1)])
         await self.profiles.update_one(
             {"assistant_id": "business"},
@@ -378,6 +383,31 @@ class MongoBusinessRepository:
         for row in rows:
             row["id"] = str(row.pop("_id"))
         return rows
+
+    async def save_google_token(self, user_id: int, token_json: str, scopes: str) -> None:
+        await self.google_tokens.update_one(
+            {"user_id": user_id},
+            {"$set": {"token_json": token_json, "scopes": scopes, "updated_at": _now()}},
+            upsert=True,
+        )
+
+    async def get_google_token(self, user_id: int) -> Optional[Dict[str, Any]]:
+        return await self.google_tokens.find_one({"user_id": user_id})
+
+    async def delete_google_token(self, user_id: int) -> None:
+        await self.google_tokens.delete_one({"user_id": user_id})
+
+    async def create_google_oauth_state(self, user_id: int, ttl_minutes: int = 10) -> str:
+        state = secrets.token_urlsafe(24)
+        expires = (datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)).isoformat()
+        await self.google_oauth_states.insert_one({"state": state, "user_id": user_id, "created_at": _now(), "expires_at": expires})
+        return state
+
+    async def consume_google_oauth_state(self, state: str) -> Optional[int]:
+        row = await self.google_oauth_states.find_one_and_delete({"state": state})
+        if not row or row["expires_at"] < _now():
+            return None
+        return int(row["user_id"])
 
     async def record_usage(
         self,

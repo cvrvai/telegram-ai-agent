@@ -185,6 +185,19 @@ CREATE TABLE IF NOT EXISTS assistant_actions (
     resolved_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_assistant_actions_status ON assistant_actions(status, expires_at);
+CREATE TABLE IF NOT EXISTS assistant_google_tokens (
+    user_id INTEGER PRIMARY KEY,
+    token_json TEXT NOT NULL,
+    scopes TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS assistant_google_oauth_states (
+    state TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_assistant_google_oauth_states_expiry ON assistant_google_oauth_states(expires_at);
 """
 
 
@@ -521,6 +534,52 @@ class BusinessRepository:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT id,user_id,action_type,target,status,created_at,expires_at,resolved_at FROM assistant_actions WHERE status=? ORDER BY created_at DESC LIMIT ?", (status, limit))
             return [dict(row) for row in await cursor.fetchall()]
+
+    async def save_google_token(self, user_id: int, token_json: str, scopes: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO assistant_google_tokens(user_id,token_json,scopes,updated_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET token_json=excluded.token_json, scopes=excluded.scopes, updated_at=excluded.updated_at",
+                (user_id, token_json, scopes, _now()),
+            )
+            await db.commit()
+
+    async def get_google_token(self, user_id: int) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM assistant_google_tokens WHERE user_id=?", (user_id,))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def delete_google_token(self, user_id: int) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM assistant_google_tokens WHERE user_id=?", (user_id,))
+            await db.commit()
+
+    async def create_google_oauth_state(self, user_id: int, ttl_minutes: int = 10) -> str:
+        state = secrets.token_urlsafe(24)
+        expires = (datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO assistant_google_oauth_states(state,user_id,created_at,expires_at) VALUES (?,?,?,?)",
+                (state, user_id, _now(), expires),
+            )
+            await db.commit()
+        return state
+
+    async def consume_google_oauth_state(self, state: str) -> Optional[int]:
+        now = _now()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM assistant_google_oauth_states WHERE state=?", (state,))
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            await db.execute("DELETE FROM assistant_google_oauth_states WHERE state=?", (state,))
+            await db.commit()
+            if row["expires_at"] < now:
+                return None
+            return int(row["user_id"])
 
     async def record_usage(self, period: str, assistant_id: str, feature: str, input_tokens: int, output_tokens: int, cost_usd: float, user_id: Optional[int] = None, model: str = "") -> None:
         async with aiosqlite.connect(self.db_path) as db:

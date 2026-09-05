@@ -82,6 +82,12 @@ class AppConfig(BaseSettings):
     crm_webhook_url: Optional[str] = Field(default=None, alias="CRM_WEBHOOK_URL")
     task_webhook_url: Optional[str] = Field(default=None, alias="TASK_WEBHOOK_URL")
 
+    # Google Calendar + Gmail (owner-only). The OAuth redirect lands on the
+    # dashboard server, so this also requires dashboard_public_url/dashboard_token.
+    google_client_id: Optional[str] = Field(default=None, alias="GOOGLE_CLIENT_ID")
+    google_client_secret: Optional[str] = Field(default=None, alias="GOOGLE_CLIENT_SECRET")
+    google_oauth_redirect_uri: Optional[str] = Field(default=None, alias="GOOGLE_OAUTH_REDIRECT_URI")
+
     # Ollama Configuration
     ollama_base_url: str = Field(default="http://localhost:11434/v1", alias="OLLAMA_BASE_URL")
     ollama_model: str = Field(default="llama3.1", alias="OLLAMA_MODEL")
