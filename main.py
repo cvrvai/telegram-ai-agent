@@ -31,7 +31,8 @@ from config import config
 from app.core.models import IncomingMessage, PriorityClassification
 from app.priority.prefilter import evaluate_prefilter
 from app.priority.classifier import AIClassifier
-from app.priority.situations import SituationLinker
+from app.priority.situations import SituationLinker, detect_repeated_issue, REPEATED_ISSUE_WINDOW_DAYS, REPEATED_ISSUE_THRESHOLD
+from app.priority.briefs import BriefEngine
 from app.telegram.notifier import Notifier
 from app.priority.digest import DigestEngine
 from app.telegram.scheduler import DigestScheduler
@@ -84,6 +85,7 @@ class TelegramPriorityApp:
         # handlers below only translate events into this use case.
         from app.storage.mongo import MongoBusinessRepository
         self.business_repository = MongoBusinessRepository(self.cfg.mongo_uri, self.cfg.mongo_database)
+        self.brief_engine = BriefEngine(self.db, self.business_repository)
         self.business_access = AccessController(
             owner_id=self.cfg.owner_user_id or self.cfg.notification_chat_id,
             approved_users=set(self.cfg.approved_user_id_list),
@@ -251,7 +253,8 @@ class TelegramPriorityApp:
                 if decision.action in {"continue", "resolve"} and decision.situation_id:
                     await self.db.update_situation(decision.situation_id, msg, decision, cls)
                 else:
-                    await self.db.create_situation(msg, decision, cls)
+                    new_situation_id = await self.db.create_situation(msg, decision, cls)
+                    await self._check_repeated_issue(msg, decision, new_situation_id)
             except Exception:
                 logger.exception(f"Situation linking failed for record #{record_id}")
 
@@ -262,6 +265,22 @@ class TelegramPriorityApp:
 
         return cls
 
+    async def _check_repeated_issue(self, msg: IncomingMessage, decision, new_situation_id: int) -> None:
+        """Fires once, the moment a chat crosses the repeat threshold -- not
+        again on the 4th, 5th, ... occurrence, so this stays one alert
+        instead of flooding the GM every time the same problem recurs."""
+        title = decision.title or msg.text
+        since = (datetime.now(timezone.utc) - timedelta(days=REPEATED_ISSUE_WINDOW_DAYS)).isoformat()
+        recent = await self.db.list_situations_active_since(since, {msg.chat_id})
+        others = [s for s in recent if s.id != new_situation_id]
+        count = detect_repeated_issue(title, others)
+        if count == REPEATED_ISSUE_THRESHOLD:
+            await self.notifier.send_message(
+                f"⚠️ <b>REPEATED ISSUE</b>\n\n"
+                f"{escape(msg.chat_title)} has reported a similar issue {count} times in the last {REPEATED_ISSUE_WINDOW_DAYS} days.\n"
+                f"Latest: {escape(title[:150])}\n\n"
+                f"This may require management review."
+            )
 
     async def run_digest_job(self) -> None:
         """Periodic job to generate and dispatch digest."""
@@ -475,7 +494,7 @@ class TelegramPriorityApp:
             return [
                 [Button.inline("➕ New Task", data=b"btn_new_task"), Button.inline("📁 Projects", data=b"btn_projects")],
                 [Button.inline("⏰ Due Soon", data=b"btn_due"), Button.inline("📋 Digest", data=b"btn_digest")],
-                [Button.inline("✅ My Work", data=b"btn_mywork")],
+                [Button.inline("✅ My Work", data=b"btn_mywork"), Button.inline("📋 Brief", data=b"btn_brief")],
                 [Button.inline("⋯ More", data=b"btn_more")],
             ]
 
@@ -885,6 +904,18 @@ class TelegramPriorityApp:
                 buttons.append([Button.inline("✅ Mark resolved", data=f"situationresolve_{situation.id}".encode())])
             buttons.append([Button.inline("🔥 All Situations", data=b"btn_situations"), Button.inline("🏠 Home", data=b"btn_menu")])
             await safe_edit_or_respond(event, "\n".join(lines), buttons)
+
+        async def render_brief_view(event, period: Optional[str] = None):
+            if period:
+                text = await self.brief_engine.period_summary(period, self.focused_chat_ids())
+            else:
+                text = await self.brief_engine.snapshot(self.focused_chat_ids())
+            buttons = [
+                [Button.inline("Today", data=b"brief_today"), Button.inline("Yesterday", data=b"brief_yesterday")],
+                [Button.inline("This Week", data=b"brief_week"), Button.inline("This Month", data=b"brief_month")],
+                [Button.inline("📋 Right Now", data=b"btn_brief"), Button.inline("🏠 Home", data=b"btn_menu")],
+            ]
+            await safe_edit_or_respond(event, text, buttons)
 
         async def render_memory_view(event):
             user_id = getattr(event, "sender_id", None)
@@ -1828,6 +1859,45 @@ class TelegramPriorityApp:
                 await render_situations_view(event)
                 return
 
+            # 3b. Management brief: current state, or a "what happened X" retrospective
+            if text_lower in {"/brief", "brief", "📋 brief", "management brief", "daily brief", "my actions", "your actions", "what should i do today", "todo", "to-do", "to do"}:
+                await render_brief_view(event)
+                return
+            if text_lower in {"/today", "what happened today", "today's brief", "todays brief"}:
+                await render_brief_view(event, "today")
+                return
+            if text_lower in {"/yesterday", "what happened yesterday"}:
+                await render_brief_view(event, "yesterday")
+                return
+            if text_lower in {"/week", "this week", "what happened this week"}:
+                await render_brief_view(event, "week")
+                return
+            if text_lower in {"/month", "this month", "what happened this month"}:
+                await render_brief_view(event, "month")
+                return
+
+            # 3c. Weekly meeting deck: a .pptx built from this week's situations
+            if text_lower in {"/weeklyreport", "/meetingdeck", "weekly report", "weekly presentation", "prepare this week's meeting presentation", "prepare the weekly presentation"}:
+                if user_id != self.business_access.owner_id or not event.is_private:
+                    await event.respond("🔒 Only the owner can generate the weekly management deck.")
+                    return
+                await event.respond("📊 Preparing this week's management deck...")
+                output_path = Path(tempfile.gettempdir()) / f"weekly-brief-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.pptx"
+                try:
+                    from app.reporting.weekly_deck import WeeklyDeckBuilder
+                    builder = WeeklyDeckBuilder(self.db, self.business_repository)
+                    await builder.build(str(output_path), self.focused_chat_ids())
+                    await event.respond(file=str(output_path), message="📊 Weekly Management Brief — review before the meeting.")
+                except Exception:
+                    logger.exception("Weekly deck generation failed")
+                    await event.respond("⚠️ Could not generate the weekly deck right now.")
+                finally:
+                    try:
+                        output_path.unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning("Could not remove temporary weekly deck %s", output_path)
+                return
+
             # 4. Instant Summary / Digest command
             if (
                 text_lower.startswith(("/digest", "/summary"))
@@ -2165,6 +2235,15 @@ class TelegramPriorityApp:
             elif data == b"btn_situations":
                 await event.answer("Loading situations...")
                 await render_situations_view(event)
+
+            elif data == b"btn_brief":
+                await event.answer("Loading brief...")
+                await render_brief_view(event)
+
+            elif data.startswith(b"brief_"):
+                period = data.decode().split("_", 1)[1]
+                await event.answer(f"Loading {period}...")
+                await render_brief_view(event, period)
 
             elif data.startswith(b"situationresolve_"):
                 situation_id = int(data.decode().split("_", 1)[1])

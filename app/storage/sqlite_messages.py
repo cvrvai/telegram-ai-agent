@@ -610,4 +610,20 @@ class Database:
             rows.sort(key=lambda situation: priority_rank.get(situation.priority, 3))
             return rows[:limit]
 
+    async def list_situations_active_since(self, since_iso: str, allowed_chat_ids: Optional[set[int]] = None) -> List[Situation]:
+        """Situations with any activity (open or newly resolved) since a given
+        instant -- the basis for "what happened today/this week" retrospectives,
+        as distinct from list_situations()'s "what's open right now" snapshot."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            scope, scope_params = _chat_scope(allowed_chat_ids)
+            cursor = await db.execute(
+                f"SELECT * FROM situations WHERE (last_update_at >= ? OR started_at >= ?){scope} ORDER BY last_update_at DESC",
+                [since_iso, since_iso, *scope_params],
+            )
+            rows = [_situation_from_row(row) for row in await cursor.fetchall()]
+            priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+            rows.sort(key=lambda situation: priority_rank.get(situation.priority, 3))
+            return rows
+
 

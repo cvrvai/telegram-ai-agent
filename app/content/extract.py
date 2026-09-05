@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("content.extract")
 
 
 class ContentExtractionError(ValueError):
@@ -26,6 +29,11 @@ class DocumentExtractor:
     SUPPORTED_TEXT = {".txt", ".md", ".csv", ".json", ".yaml", ".yml"}
     SUPPORTED_SPREADSHEETS = {".xlsx", ".xls"}
     SUPPORTED_IMAGES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+    SUPPORTED_WORD = {".docx"}
+    # A scanned page or photo with only a stray character or two isn't a
+    # readable document -- treat it the same as "no OCR available" rather
+    # than handing the model a couple of garbled letters as if it mattered.
+    MIN_OCR_CHARS = 20
 
     def __init__(self, max_bytes: int = 10_000_000, max_chars: int = 80_000):
         self.max_bytes = max_bytes
@@ -58,9 +66,50 @@ class DocumentExtractor:
             return self._bounded(file_path, "pdf", text)
         if suffix in self.SUPPORTED_SPREADSHEETS:
             return self._extract_spreadsheet(file_path, suffix)
+        if suffix in self.SUPPORTED_WORD:
+            return self._extract_word(file_path)
         if suffix in self.SUPPORTED_IMAGES:
-            return ExtractedContent(str(file_path), "image", f"Image file: {file_path.name}")
+            return self._extract_image(file_path)
         raise ContentExtractionError(f"Unsupported file type: {suffix or 'unknown'}")
+
+    def _extract_word(self, file_path: Path) -> ExtractedContent:
+        try:
+            import docx
+        except ImportError as exc:
+            raise ContentExtractionError("Word document support requires the optional python-docx package") from exc
+        try:
+            document = docx.Document(str(file_path))
+            parts = [p.text for p in document.paragraphs if p.text.strip()]
+            for table in document.tables:
+                for row in table.rows:
+                    cells = [cell.text.strip() for cell in row.cells]
+                    if any(cells):
+                        parts.append("\t".join(cells))
+        except Exception as exc:
+            raise ContentExtractionError("The Word document could not be read") from exc
+        return self._bounded(file_path, "word", "\n".join(parts))
+
+    def _extract_image(self, file_path: Path) -> ExtractedContent:
+        """OCR the image when Tesseract is available; otherwise fall back to
+        a filename placeholder the caller treats as "not readable text"."""
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError:
+            return ExtractedContent(str(file_path), "image", f"Image file: {file_path.name}")
+        try:
+            with Image.open(file_path) as image:
+                text = pytesseract.image_to_string(image)
+        except Exception as exc:
+            logger.warning("OCR failed for %s: %s", file_path.name, exc)
+            return ExtractedContent(str(file_path), "image", f"Image file: {file_path.name}")
+        text = text.strip()
+        if len(text) < self.MIN_OCR_CHARS:
+            return ExtractedContent(str(file_path), "image", f"Image file: {file_path.name} (no readable text found by OCR)")
+        # A distinct content_type from "image" -- OCR text flows through the
+        # normal text-context path instead of requiring a vision-capable
+        # provider, since it's now plain extracted text like a PDF's.
+        return self._bounded(file_path, "image_ocr", text)
 
     def _extract_spreadsheet(self, file_path: Path, suffix: str) -> ExtractedContent:
         """Convert workbook cells to bounded, sheet-labelled text for the AI."""

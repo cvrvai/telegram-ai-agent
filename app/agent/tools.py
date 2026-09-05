@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -44,6 +44,13 @@ class CommentInput(IdInput):
 
 class AssignmentInput(IdInput):
     assignee: str = Field(min_length=1, max_length=200)
+
+
+class BriefInput(_Input):
+    period: Literal["now", "today", "yesterday", "week", "month"] = Field(
+        default="now",
+        description="'now' for the current critical/pending situations, or a retrospective window.",
+    )
 
 
 class JsonOutput(BaseModel):
@@ -157,6 +164,18 @@ async def assign_work_item(args: AssignmentInput, context: Any) -> Any:
     return {"updated": changed, "assignee": resolution.value, "work_item": await service.get_work_item(actor, chat_id, chat_type, item["id"])}
 
 
+async def get_management_brief(args: BriefInput, context: Any) -> Any:
+    if context.message_database is None:
+        return {"brief": "Situation history is not available in this context."}
+    from app.priority.briefs import BriefEngine
+
+    engine = BriefEngine(context.message_database, context.repository)
+    allowed = getattr(context, "allowed_chat_ids", None) or None
+    if args.period == "now":
+        return {"brief": await engine.snapshot(allowed)}
+    return {"brief": await engine.period_summary(args.period, allowed)}
+
+
 def build_registry(telegram: bool = False) -> ToolRegistry:
     read = RiskLevel.READ
     write = RiskLevel.SAFE_WRITE
@@ -169,6 +188,7 @@ def build_registry(telegram: bool = False) -> ToolRegistry:
         ToolDefinition(name="get_my_work", description="List open work assigned to or owned by the user.", input_schema=LimitInput, output_schema=JsonOutput, risk=read, required_permission="work.read", side_effect=False, approval_required=False, handler=get_my_work),
         ToolDefinition(name="get_due_soon", description="List open work due within 48 hours.", input_schema=LimitInput, output_schema=JsonOutput, risk=read, required_permission="work.read", side_effect=False, approval_required=False, handler=get_due_soon),
         ToolDefinition(name="search_messages", description="Search only approved source messages.", input_schema=HintInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=False, approval_required=False, handler=search_messages),
+        ToolDefinition(name="get_management_brief", description="Get the current management brief (critical/pending situations, pending approvals) or a 'what happened' retrospective for today/yesterday/this week/this month.", input_schema=BriefInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=False, approval_required=False, handler=get_management_brief),
         ToolDefinition(name="search_memory", description="Search the user's saved assistant conversation memory.", input_schema=HintInput, output_schema=JsonOutput, risk=read, required_permission="memory.read", side_effect=False, approval_required=False, handler=search_memory),
         ToolDefinition(name="change_work_status", description="Move a work item through the legal workflow.", input_schema=StatusInput, output_schema=JsonOutput, risk=write, required_permission="work.update", side_effect=True, approval_required=False, handler=change_work_status),
         ToolDefinition(name="change_priority", description="Change a work item's P0-P3 priority.", input_schema=PriorityInput, output_schema=JsonOutput, risk=write, required_permission="work.update", side_effect=True, approval_required=False, handler=change_priority),

@@ -29,6 +29,9 @@ SITUATION_WORTHY_TYPES = {"task", "blocker", "waiting", "decision", "update"}
 # An "open" situation this stale is treated as unrelated history, not a live
 # match -- a new message about the same room three weeks later is a new issue.
 REOPEN_WINDOW_HOURS = 72
+# "The same type of problem N times this week" (case study section 16).
+REPEATED_ISSUE_WINDOW_DAYS = 7
+REPEATED_ISSUE_THRESHOLD = 3
 _GUEST_WORDS = ("guest", "guests", "customer", "customers", "visitor", "visitors")
 _STOPWORDS = {
     "this", "that", "with", "from", "have", "need", "will", "please", "about",
@@ -45,6 +48,40 @@ def _mentions_guest(text: str) -> bool:
 def _keywords(text: str) -> set[str]:
     words = re.findall(r"[a-zA-Z0-9]{4,}", (text or "").lower())
     return {w for w in words if w not in _STOPWORDS}
+
+
+def detect_repeated_issue(
+    new_title: str,
+    recent_situations: list[Situation],
+    *,
+    window_days: int = REPEATED_ISSUE_WINDOW_DAYS,
+    threshold: int = REPEATED_ISSUE_THRESHOLD,
+    now: Optional[datetime] = None,
+) -> Optional[int]:
+    """Returns the total occurrence count (including the new one) if the same
+    kind of issue has recurred at least `threshold` times in `window_days`,
+    else None. Uses the same 2+-keyword-overlap bar as heuristic situation
+    linking, so "the same kind of problem" means one consistent thing.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=window_days)
+    needle = _keywords(new_title)
+    if not needle:
+        return None
+    matches = 0
+    for situation in recent_situations:
+        try:
+            started = datetime.fromisoformat(situation.started_at)
+        except ValueError:
+            continue
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        if started < cutoff:
+            continue
+        if len(needle & _keywords(situation.title)) >= 2:
+            matches += 1
+    total = matches + 1  # the new situation itself
+    return total if total >= threshold else None
 
 
 class SituationLinker:

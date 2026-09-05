@@ -321,3 +321,16 @@ class MongoMessageDatabase:
         # Stable sort: ties keep the last_update_at-descending order from Mongo.
         rows.sort(key=lambda situation: priority_rank.get(situation.priority, 3))
         return rows[:limit]
+
+    async def list_situations_active_since(self, since_iso: str, allowed_chat_ids: Optional[set[int]] = None) -> List[Situation]:
+        """Situations with any activity (open or newly resolved) since a given
+        instant -- the basis for "what happened today/this week" retrospectives,
+        as distinct from list_situations()'s "what's open right now" snapshot."""
+        query: Dict[str, Any] = {"$or": [{"last_update_at": {"$gte": since_iso}}, {"started_at": {"$gte": since_iso}}]}
+        if allowed_chat_ids is not None:
+            query = {"$and": [query, {"chat_id": {"$in": [int(chat_id) for chat_id in allowed_chat_ids]}}]}
+        cursor = self.situations.find(query).sort("last_update_at", -1)
+        rows = [self._situation(doc) async for doc in cursor]
+        priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+        rows.sort(key=lambda situation: priority_rank.get(situation.priority, 3))
+        return rows
