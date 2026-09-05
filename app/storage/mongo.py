@@ -222,10 +222,10 @@ class MongoBusinessRepository:
         rows.reverse()
         return rows
 
-    async def search_turns(self, user_id: int, assistant_id: str, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+    async def search_turns(self, user_id: int, assistant_id: str, query: str, limit: int = 20, chat_id: int | None = None) -> List[Dict[str, Any]]:
         """Search saved assistant turns within the caller's own conversations."""
         conversations = self.conversations.find(
-            {"assistant_id": assistant_id, "user_id": user_id},
+            {"assistant_id": assistant_id, "user_id": user_id, **({"chat_id": chat_id} if chat_id is not None else {})},
             {"_id": 1, "chat_id": 1, "title": 1},
         )
         conversation_ids = [doc["_id"] async for doc in conversations]

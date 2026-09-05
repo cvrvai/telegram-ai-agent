@@ -335,7 +335,7 @@ class BusinessRepository:
             rows = await cursor.fetchall()
             return [dict(row) for row in reversed(rows)]
 
-    async def search_turns(self, user_id: int, assistant_id: str, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+    async def search_turns(self, user_id: int, assistant_id: str, query: str, limit: int = 20, chat_id: int | None = None) -> List[Dict[str, Any]]:
         """Search saved assistant turns within the caller's own conversations."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -343,9 +343,9 @@ class BusinessRepository:
                 """SELECT t.role, t.content, t.model, t.created_at, c.chat_id, c.title
                    FROM assistant_turns t
                    JOIN assistant_conversations c ON c.id = t.conversation_id
-                   WHERE c.user_id=? AND c.assistant_id=? AND t.content LIKE ?
+                   WHERE c.user_id=? AND c.assistant_id=? AND t.content LIKE ? AND (? IS NULL OR c.chat_id=?)
                    ORDER BY t.id DESC LIMIT ?""",
-                (user_id, assistant_id, f"%{query}%", limit),
+                (user_id, assistant_id, f"%{query}%", chat_id, chat_id, limit),
             )
             return [dict(row) for row in await cursor.fetchall()]
 

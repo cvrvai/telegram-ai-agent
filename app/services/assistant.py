@@ -47,7 +47,7 @@ class AssistantService:
         self.budget.reserve(estimate)
         try:
             response = await self.provider.answer(query, prompt_context)
-        except Exception:
+        except BaseException:
             self.budget.settle(0.0, estimate)
             raise
 
@@ -107,7 +107,7 @@ class AssistantService:
         decision = self.access.decide(user_id, chat_id, chat_type)
         if not decision.allowed:
             raise PermissionError(decision.reason)
-        return await self.repository.search_turns(user_id, self.assistant_id, query, limit)
+        return await self.repository.search_turns(user_id, self.assistant_id, query, limit, chat_id=chat_id)
 
     async def reset_conversation(self, user_id: int, chat_id: int, chat_type: str) -> int:
         """Delete the current conversation after access validation."""

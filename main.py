@@ -258,7 +258,7 @@ class TelegramPriorityApp:
 
     def focused_chat_ids(self) -> set[int]:
         """Return the explicit chat scope for message reads and summaries."""
-        return {int(chat_id) for chat_id in self._focus_settings}
+        return {int(chat_id) for chat_id, row in self._focus_settings.items() if row.get("enabled", True)}
 
     async def start_userbot(self) -> None:
         """Starts the Telethon Userbot client to listen to all chats."""
@@ -306,6 +306,10 @@ class TelegramPriorityApp:
             # inspect chat metadata or message content from any conversation.
             # The interactive bot remains available so /setup can be opened.
             if not self._focus_settings:
+                return
+
+            # Reject unselected peers before resolving senders or reading content.
+            if int(event.chat_id) not in self.focused_chat_ids():
                 return
 
             try:
@@ -593,189 +597,9 @@ class TelegramPriorityApp:
             await safe_edit_or_respond(event, "\n".join(lines), setup_home_buttons(state))
 
         async def setup_dialogs():
-            """List chats visible to the user account for the owner-only picker."""
-            if not self.telethon_client:
-                return []
-            try:
-                dialogs = await self.telethon_client.get_dialogs(limit=100)
-            except Exception:
-                # Some Telethon versions expose the same operation only via
-                # the async iterator. Keep the picker useful across versions.
-                dialogs = [dialog async for dialog in self.telethon_client.iter_dialogs(limit=100)]
-            result = []
-            seen_chat_ids = set()
-            seen_group_names = set()
-            for dialog in dialogs:
-                entity = getattr(dialog, "entity", None)
-                chat_id = getattr(dialog, "id", None)
-                if chat_id is None or (bot_id is not None and int(chat_id) == bot_id):
-                    continue
-                # Telegram can keep the original basic group in the dialog
-                # list after it has been migrated to a supergroup. It has the
-                # same title as the active group, but is no longer a chat the
-                # owner can meaningfully monitor.
-                if getattr(entity, "migrated_to", None) is not None:
-                    continue
-                chat_id = int(chat_id)
-                if chat_id in seen_chat_ids:
-                    continue
-                if getattr(entity, "bot", False):
-                    continue
-                if not (getattr(dialog, "is_group", False) or getattr(dialog, "is_channel", False) or getattr(dialog, "is_user", False)):
-                    continue
-                chat_type = "private" if getattr(dialog, "is_user", False) else ("channel" if getattr(dialog, "is_channel", False) else "group")
-                first_name = getattr(entity, "first_name", None) or ""
-                last_name = getattr(entity, "last_name", None) or ""
-                contact_name = " ".join(part for part in (first_name, last_name) if part).strip()
-                title = (
-                    getattr(dialog, "name", None)
-                    or getattr(entity, "title", None)
-                    or contact_name
-                    or getattr(entity, "username", None)
-                    or f"Contact {chat_id}"
-                )
-                username = getattr(entity, "username", None) or ""
-                # A migrated group may still be returned by some Telegram
-                # clients without the migration marker. Collapse identical
-                # group/channel names in that case while keeping personal
-                # contacts with the same name separate.
-                if chat_type in {"group", "channel"}:
-                    group_key = (" ".join(str(title).casefold().split()), str(username).casefold())
-                    if group_key in seen_group_names:
-                        continue
-                    seen_group_names.add(group_key)
-                seen_chat_ids.add(chat_id)
-                result.append({"chat_id": chat_id, "chat_title": title, "chat_type": chat_type, "chat_username": username})
-            return result
-
-        async def find_unapproved_source_request(text: str):
-            """Resolve a natural-language request to one unapproved Telegram chat."""
-            lowered = (text or "").casefold()
-            if not any(word in lowered for word in ("check", "read", "summar", "search", "look", "access", "review")):
-                return None
-            if not self.telethon_client:
-                return None
-            # Telegram's Saved Messages is the current user's own private
-            # dialog and may not be returned with the literal title
-            # "Saved Messages" by every Telethon version.
-            if "saved messages" in lowered:
-                try:
-                    me = await self.telethon_client.get_me()
-                    saved_id = int(getattr(me, "id", 0) or self.business_access.owner_id or 0)
-                except Exception:
-                    saved_id = int(self.business_access.owner_id or 0)
-                if saved_id and saved_id not in self.focused_chat_ids():
-                    return {"chat_id": saved_id, "chat_title": "Saved Messages", "chat_type": "private", "chat_username": "me"}
-            try:
-                dialogs = await setup_dialogs()
-            except Exception:
-                logger.exception("Could not load Telegram dialogs for an access request")
-                return None
-            selected = self.focused_chat_ids()
-            candidates = []
-            for dialog in dialogs:
-                if int(dialog["chat_id"]) in selected:
-                    continue
-                aliases = [str(dialog.get("chat_title") or ""), str(dialog.get("chat_username") or "")]
-                aliases = [alias.casefold().strip() for alias in aliases if len(alias.strip()) >= 3]
-                if any(alias and alias in lowered for alias in aliases):
-                    candidates.append(dialog)
-            if not candidates:
-                return None
-            # Prefer the most specific name if a short alias matches several
-            # dialogs (for example, multiple contacts with the same surname).
-            return max(candidates, key=lambda row: max(len(str(row.get("chat_title") or "")), len(str(row.get("chat_username") or ""))))
-
-        async def read_source_after_consent(event, source: dict, request: str, persistent: bool = False):
-            """Read and summarize one explicitly approved source chat."""
-            chat_id = int(source["chat_id"])
-            if persistent:
-                await self.business_repository.upsert_focus_scope(
-                    "business",
-                    chat_id,
-                    source.get("chat_title") or "Chat",
-                    source.get("chat_type") or "private",
-                    "monitor",
-                    True,
-                )
-                self._focus_settings[chat_id] = {
-                    **source,
-                    "chat_id": chat_id,
-                    "mode": "monitor",
-                    "enabled": True,
-                }
-                if source.get("chat_type") in {"group", "channel"}:
-                    self.business_access.enable_group(chat_id)
-
-            try:
-                messages = await self.telethon_client.get_messages(chat_id, limit=40)
-                context = []
-                for message in reversed(list(messages or [])):
-                    content = (getattr(message, "message", None) or "").strip()
-                    if not content:
-                        continue
-                    sender = getattr(message, "sender", None)
-                    sender_name = getattr(sender, "first_name", None) or getattr(sender, "title", None) or "Telegram"
-                    context.append(f"[{source.get('chat_title') or 'Telegram'} · {sender_name}] {content[:1200]}")
-                if not context:
-                    answer = f"I have permission to read {source.get('chat_title') or 'that chat'}, but there are no readable text messages available."
-                else:
-                    prompt = (
-                        f"Using only the approved Telegram source '{source.get('chat_title') or 'Chat'}', "
-                        f"answer the user's request. Summarize clearly when they ask for a summary. "
-                        f"Do not claim access to other chats. User request: {request}"
-                    )
-                    answer = await self.business_assistant.answer(
-                        getattr(event, "sender_id", None),
-                        getattr(event, "chat_id", None),
-                        "private",
-                        prompt,
-                        context=context,
-                    )
-                if persistent:
-                    answer = f"✅ <b>{escape(str(source.get('chat_title') or 'Chat'))}</b> is now an approved source.\n\n{answer}"
-                await safe_edit_or_respond(event, answer, get_main_menu())
-            except Exception:
-                logger.exception("Approved source read failed for chat %s", chat_id)
-                await safe_edit_or_respond(event, "⚠️ I could not read that chat after approval. Check the connected Telegram account and try again.", get_main_menu())
-
-        async def request_source_access(event, request: str) -> bool:
-            """Ask the owner before reading a chat outside the source allow-list."""
-            user_id = getattr(event, "sender_id", None)
-            if user_id != self.business_access.owner_id:
-                return False
-            source = await find_unapproved_source_request(request)
-            if not source:
-                # If the owner clearly asked about Telegram messages but the
-                # exact title could not be resolved, send them to the same
-                # Telegram picker used by setup instead of allowing the AI to
-                # guess or search outside the allow-list.
-                lowered = request.casefold()
-                if any(word in lowered for word in ("message", "chat")):
-                    await event.respond(
-                        "🔐 <b>Choose a source chat first</b>\n\n"
-                        "I could not match that name to one Telegram dialog. Select the personal chat or group you want me to read, then ask again.",
-                        parse_mode="HTML",
-                        buttons=[[Button.inline("📂 Select chats", data=b"setup_chats")]],
-                    )
-                    return True
-                return False
-            key = (int(user_id), int(getattr(event, "chat_id", user_id)))
-            self._pending_access_requests[key] = {"source": source, "request": request}
-            chat_type = source.get("chat_type") or "private"
-            kind = "personal chat" if chat_type == "private" else ("channel" if chat_type == "channel" else "group chat")
-            title = escape(str(source.get("chat_title") or "Chat"))
-            await event.respond(
-                f"🔐 <b>Permission required</b>\n\n"
-                f"You asked me to read <b>{title}</b> ({kind}), but it is not in my approved source list.\n\n"
-                "Choose whether I should read it once for this request or add it to your monitored sources.",
-                parse_mode="HTML",
-                buttons=[
-                    [Button.inline("✅ Grant once", data=f"access_once_{source['chat_id']}".encode()), Button.inline("➕ Always allow", data=f"access_always_{source['chat_id']}".encode())],
-                    [Button.inline("❌ Cancel", data=b"access_cancel")],
-                ],
-            )
-            return True
+            rows = await self.conversation.sources.directory()
+            return [{"chat_id": row["id"], "chat_title": row["title"],
+                     "chat_type": row["kind"], "chat_username": row["username"]} for row in rows]
 
         async def render_setup_chats(event, user_id: int, kind: str = "all", page: int = 0):
             state = setup_state(user_id)
@@ -1313,15 +1137,20 @@ class TelegramPriorityApp:
 
             await safe_edit_or_respond(event, "\n".join(lines), get_tier_menu(tier))
 
+        from app.agent.state import MongoAgentState
+        from app.telegram.sources import TelegramSources
+        from app.telegram.conversation import TelegramConversation
+        agent_state = MongoAgentState(self.business_repository.db)
+        await agent_state.init()
         self.agent_runtime = AgentRuntime(
-            self.business_assistant,
-            self.business_repository,
-            self.business_provider,
-            message_database=self.db,
-            registry=build_registry(),
+            self.business_assistant, self.business_repository, self.business_provider,
+            message_database=self.db, registry=build_registry(telegram=True),
             timeout_seconds=self.cfg.ai_request_timeout_seconds,
             allowed_chat_ids_provider=self.focused_chat_ids,
         )
+        sources = TelegramSources(lambda: self.telethon_client, self.business_access.owner_id,
+                                  agent_state, self.focused_chat_ids, self.business_access)
+        self.conversation = TelegramConversation(self.agent_runtime, sources, agent_state)
         logger.info("Interactive bot message and callback handlers registered")
 
         @bot_client.on(events.NewMessage)
@@ -1376,6 +1205,14 @@ class TelegramPriorityApp:
                     await event.respond(f"Your access request was sent for administrator approval. Request code: {code}")
                 else:
                     await event.respond("🔒 This assistant is available only to approved users and groups.")
+                return
+
+            if await self.conversation.controls(event):
+                return
+            if text_lower in {"cancel", "stop", "never mind", "nevermind", "/cancel"}:
+                self._setup_state.pop(user_id, None)
+                self._pm_state.pop(user_id, None)
+                await event.respond("Cancelled." if text_lower != "stop" else "There is no active request to stop.")
                 return
 
             # Direct search input: after pressing Search, a plain message such
@@ -1471,18 +1308,6 @@ class TelegramPriorityApp:
                     await event.respond("❌ Cancelled. No new chat access or work item was created.")
                 else:
                     await event.respond("There is nothing waiting to be cancelled.")
-                return
-
-            if not self._focus_settings and not (
-                text_lower.startswith(("/start", "/menu", "/help"))
-                or text in ("❓ Help", "menu", "help", "start")
-            ):
-                await event.respond(
-                    "🔒 <b>Setup required first.</b>\n\n"
-                    "For privacy, no messages are processed until you select at least one person or group.",
-                    parse_mode="HTML",
-                    buttons=get_main_menu(),
-                )
                 return
 
             # Administrator-only pairing controls. The target user's access is
@@ -1888,55 +1713,24 @@ class TelegramPriorityApp:
                 await event.respond("Hello! How can I help you today?")
                 return
 
-            # A request for an unapproved person or group chat starts a
-            # consent flow before any Telegram history is read.
-            if assistant is self.business_assistant and await request_source_access(event, text):
+            if assistant is self.business_assistant:
+                await self.conversation.handle(event, text)
                 return
-
-            if event.is_private and user_id == self.business_access.owner_id:
-                # The owner can ask about the messages already captured by the
-                # listener. Approved staff remain scoped until source access is
-                # explicitly configured.
-                context_records = await self.db.get_recent_messages(limit=35, allowed_chat_ids=self.focused_chat_ids())
-            elif not event.is_private:
-                context_records = await self.db.get_messages_for_chat(event.chat_id, limit=20, allowed_chat_ids=self.focused_chat_ids())
-            else:
-                context_records = []
-            context = [
-                f"[{record.sender_name} in {record.chat_title}] {record.text}"
-                for record in reversed(context_records)
-            ]
-            progress = await event.respond("⏳ Thinking…")
+            # Other profiles do not inherit the owner's Telegram history.
+            progress = await event.respond("Thinking…")
             try:
-                async with bot_client.action(event.chat_id, "typing"):
-                    if assistant is self.business_assistant:
-                        answer = await asyncio.wait_for(
-                            self.agent_runtime.handle_turn(user_id, event.chat_id, chat_type, text),
-                            timeout=self.cfg.ai_request_timeout_seconds,
-                        )
-                    else:
-                        answer = await asyncio.wait_for(
-                            assistant.answer(user_id, event.chat_id, chat_type, text, context=context),
-                            timeout=self.cfg.ai_request_timeout_seconds,
-                        )
-            except PermissionError:
-                await progress.edit("🔒 This assistant is available only to approved users and groups.")
-                return
-            except BudgetExceeded:
-                await progress.edit("⏸️ The AI allowance is currently used. Please contact the administrator.")
-                return
-            except RuntimeError:
-                await progress.edit("⚠️ Ollama is not configured or is temporarily unavailable. Check the terminal log.")
-                return
-            except asyncio.TimeoutError:
-                logger.error("Business assistant request timed out after %s seconds", self.cfg.ai_request_timeout_seconds)
-                await progress.edit("⚠️ Ollama took too long to respond. Please try again.")
-                return
+                answer = await asyncio.wait_for(
+                    assistant.answer(user_id, event.chat_id, chat_type, text),
+                    timeout=self.cfg.ai_request_timeout_seconds,
+                )
+                from app.telegram.conversation import chunks
+                parts = list(chunks(answer))
+                await progress.edit(parts[0], parse_mode=None)
+                for part in parts[1:]:
+                    await event.respond(part, parse_mode=None)
             except Exception:
-                logger.exception("Business assistant request failed")
-                await progress.edit("⚠️ I could not reach the AI service. Please check the API key, model name, and network connection.")
-                return
-            await progress.edit(answer, parse_mode="HTML")
+                logger.warning("Assistant profile request failed")
+                await progress.edit("I couldn't complete that request. Please try again.", parse_mode=None)
 
         # Callback queries for inline buttons - EDIT IN PLACE (NO SPAM)
         @bot_client.on(events.CallbackQuery)
@@ -1948,6 +1742,13 @@ class TelegramPriorityApp:
                 await event.answer("🔒 Access not approved", alert=True)
                 return
             data = event.data
+            if data.startswith(b"agent:"):
+                try:
+                    await self.conversation.callback(event)
+                except PermissionError:
+                    await event.answer("Access is no longer available for this request.", alert=True)
+                return
+
 
             if data.startswith(b"setup_") or data == b"btn_setup":
                 if callback_user_id != self.business_access.owner_id:
@@ -2077,24 +1878,8 @@ class TelegramPriorityApp:
                 await event.answer("Complete workspace setup before using the assistant", alert=True)
                 return
 
-            if data.startswith(b"access_once_") or data.startswith(b"access_always_") or data == b"access_cancel":
-                if callback_user_id != self.business_access.owner_id:
-                    await event.answer("Only the owner can grant source access", alert=True)
-                    return
-                key = (int(callback_user_id), int(callback_chat_id))
-                pending = self._pending_access_requests.get(key)
-                if data == b"access_cancel":
-                    self._pending_access_requests.pop(key, None)
-                    await event.answer("Access request cancelled")
-                    await safe_edit_or_respond(event, "❌ No chat was read.", get_main_menu())
-                    return
-                if not pending:
-                    await event.answer("This access request has expired", alert=True)
-                    return
-                persistent = data.startswith(b"access_always_")
-                self._pending_access_requests.pop(key, None)
-                await event.answer("Reading approved chat..." if not persistent else "Chat added to approved sources...")
-                await read_source_after_consent(event, pending["source"], pending["request"], persistent=persistent)
+            if data.startswith((b"access_once_", b"access_always_")) or data == b"access_cancel":
+                await event.answer("This old request has expired. Ask your question again.", alert=True)
                 return
 
             if data == b"btn_new_project":

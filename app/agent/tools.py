@@ -47,7 +47,8 @@ class AssignmentInput(IdInput):
 
 
 class JsonOutput(BaseModel):
-    result: Any = None
+    # Preserve handler payload keys instead of silently dropping them.
+    model_config = ConfigDict(extra="allow")
 
 
 def _service_context(context: Any) -> tuple[Any, int, int, str]:
@@ -156,7 +157,7 @@ async def assign_work_item(args: AssignmentInput, context: Any) -> Any:
     return {"updated": changed, "assignee": resolution.value, "work_item": await service.get_work_item(actor, chat_id, chat_type, item["id"])}
 
 
-def build_registry() -> ToolRegistry:
+def build_registry(telegram: bool = False) -> ToolRegistry:
     read = RiskLevel.READ
     write = RiskLevel.SAFE_WRITE
     definitions = [
@@ -175,6 +176,18 @@ def build_registry() -> ToolRegistry:
         ToolDefinition(name="add_comment", description="Add a comment to a work item.", input_schema=CommentInput, output_schema=JsonOutput, risk=write, required_permission="work.comment", side_effect=True, approval_required=False, handler=add_comment),
         ToolDefinition(name="assign_work_item", description="Assign a work item to one approved user by name or ID.", input_schema=AssignmentInput, output_schema=JsonOutput, risk=write, required_permission="work.update", side_effect=True, approval_required=False, handler=assign_work_item),
     ]
+    if telegram:
+        from app.telegram.sources import SourceInput, read_telegram_chat, select_telegram_chat, telegram_access
+        # Conversational release exposes read tools; existing explicit business
+        # commands remain available through their service authorization.
+        definitions = [tool for tool in definitions if tool.risk == read and tool.name != "search_messages"]
+        for name, description, schema, handler in [
+            ("read_telegram_chat", "Read/summarize one Telegram personal chat, group or Saved Messages. Resolves the name, asks permission, and retrieves the requested dates.", SourceInput, read_telegram_chat),
+            ("select_telegram_chat", "Open Telegram buttons to search and select a group or personal chat, then grant read access and continue the request.", SourceInput, select_telegram_chat),
+            ("telegram_access", "Show persistent history-read permissions with Telegram revoke buttons. Monitoring is managed separately in Setup.", LimitInput, telegram_access),
+        ]:
+            definitions.append(ToolDefinition(name=name, description=description, input_schema=schema, output_schema=JsonOutput,
+                risk=read, required_permission="source.read", side_effect=False, approval_required=False, handler=handler))
     return ToolRegistry(definitions)
 
 

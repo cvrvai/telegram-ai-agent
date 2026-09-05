@@ -21,13 +21,18 @@ class DecisionPlanner(Protocol):
 class ProviderDecisionPlanner:
     """Adapts the existing provider answer interface to AgentDecision."""
 
-    def __init__(self, provider: AIProvider, answer_callable: Callable[[str, list[str]], Any] | None = None) -> None:
+    def __init__(self, provider: AIProvider, answer_callable: Callable[[str, list[str]], Any] | None = None, registry=None) -> None:
         self.provider = provider
         self.answer_callable = answer_callable
+        self.registry = registry
 
     async def decide(self, user_text: str, context: AgentContext, tool_names: tuple[str, ...], tool_results: list[dict[str, Any]]) -> AgentDecision:
+        specs = self.registry.specifications() if self.registry else []
+        if hasattr(self.provider, "decide") and self.answer_callable:
+            response = await self.answer_callable(user_text, context.prompt_lines(), specs, tool_results)
+            return AgentDecision.model_validate(self._decode_decision(response.text))
         instructions = (
-            "You are a work-management agent. Return ONLY valid JSON matching this contract: "
+            "You are a conversational assistant. Return ONLY valid JSON matching this contract: "
             '{"kind":"final|tool_call|clarification","message":string|null,"tool_name":string|null,'
             '"arguments":object,"question":string|null,"candidate_options":[],"explicitness":"read|suggest|command|speculative"}. '
             "Use only registered tools. Never invent internal IDs; use public keys or hints. "
@@ -35,7 +40,7 @@ class ProviderDecisionPlanner:
             "For Telegram source requests, use search_messages with a non-empty hint; search_memory is only for saved assistant conversation memory. "
             "If the requested source is outside the authorized source chat IDs, ask the owner for permission instead of trying another tool. "
             "Use clarification for ambiguity and speculative for maybe/could suggestions. "
-            f"Registered tools: {', '.join(tool_names)}.\n"
+            f"Registered tools: {json.dumps(specs, default=str) or ', '.join(tool_names)}.\n"
             f"Context:\n{chr(10).join(context.prompt_lines())}\n"
             f"Previous tool results:\n{json.dumps(tool_results[-4:], default=str)}\n"
             f"User request: {user_text}"
@@ -44,14 +49,8 @@ class ProviderDecisionPlanner:
         try:
             payload = self._decode_decision(response.text)
             return AgentDecision.model_validate(payload)
-        except Exception:
-            # Providers sometimes wrap valid JSON in Markdown fences. If the
-            # response is not a valid decision, return a clean user message
-            # instead of leaking an internal tool payload into Telegram.
-            text = response.text.strip()
-            if text.startswith("```"):
-                text = text.strip("`").removeprefix("json").strip()
-            return AgentDecision(kind="final", message=text or "I could not determine a response.", explicitness="read")
+        except (ValueError, TypeError):
+            return AgentDecision(kind="final", message="I couldn't understand the AI service's response. Please try again.")
 
     @staticmethod
     def _decode_decision(text: str) -> dict[str, Any]:
@@ -80,25 +79,30 @@ class AgentRuntime:
         self.registry = registry or ToolRegistry()
         self.policy = policy or PolicyEngine()
         self.retriever = ContextRetriever(service, repository, message_database, allowed_chat_ids_provider)
-        self.planner = ProviderDecisionPlanner(provider, self._call_provider)
+        self.planner = ProviderDecisionPlanner(provider, self._call_provider, self.registry)
+        self.telegram = None
         self.max_rounds = max(1, max_rounds)
         self.timeout_seconds = timeout_seconds
         self.sessions: dict[tuple[int, int], dict[str, Any]] = {}
 
-    async def handle_turn(self, actor_id: int, chat_id: int, chat_type: str, user_text: str) -> str:
+    async def handle_turn(self, actor_id: int, chat_id: int, chat_type: str, user_text: str, *, session_state=None, initial_results=None) -> str:
         decision = self.service.access.decide(actor_id, chat_id, chat_type)
         if not decision.allowed:
             raise PermissionError(decision.reason)
-        session = self.sessions.setdefault((actor_id, chat_id), {})
+        session = session_state if session_state is not None else self.sessions.setdefault((actor_id, chat_id), {})
         context = await self.retriever.retrieve(actor_id, chat_id, chat_type, user_text, session)
-        tool_results: list[dict[str, Any]] = []
+        context.telegram = self.telegram
+        tool_results: list[dict[str, Any]] = list(initial_results or [])
         seen_calls: set[str] = set()
         try:
             for _ in range(self.max_rounds):
                 planned = await asyncio.wait_for(self.planner.decide(user_text, context, self.registry.names(), tool_results), self.timeout_seconds)
                 if planned.kind == "final":
                     message = planned.message or "I could not determine a response."
-                    await self._remember_turn(actor_id, chat_id, user_text, message)
+                    # Source-derived summaries stay out of reusable assistant memory.
+                    # Follow-ups reauthorize history; only the source/date reference persists.
+                    if not any(row["tool"] == "read_telegram_chat" for row in tool_results):
+                        await self._remember_turn(actor_id, chat_id, user_text, message)
                     return message
                 if planned.kind == "clarification":
                     question = planned.question or "Could you clarify which item you mean?"
@@ -111,6 +115,8 @@ class AgentRuntime:
                 seen_calls.add(call_key)
                 tool = self.registry.get(planned.tool_name or "")
                 permission_allowed = self.service.access.decide(actor_id, chat_id, chat_type).allowed
+                if tool.required_permission == "source.read":
+                    permission_allowed = permission_allowed and actor_id == self.service.access.owner_id and chat_type == "private"
                 resolved = self._arguments_resolved(planned.arguments, context)
                 policy = self.policy.evaluate(tool, permission_allowed=permission_allowed, explicitness=planned.explicitness, resolved=resolved)
                 await self._audit(actor_id, tool.name, planned.arguments, policy.outcome, None)
@@ -121,7 +127,7 @@ class AgentRuntime:
                 result = await self.registry.execute(tool.name, planned.arguments, context)
                 payload = result.model_dump(mode="json")
                 await self._audit(actor_id, tool.name, planned.arguments, policy.outcome, payload.get("ok"))
-                tool_results.append({"tool": tool.name, "result": payload, "policy": policy.outcome})
+                tool_results.append({"tool": tool.name, "arguments": planned.arguments, "result": payload, "policy": policy.outcome})
                 if isinstance(payload.get("data"), dict):
                     item = payload["data"].get("work_item")
                     if isinstance(item, dict) and item.get("id"):
@@ -130,8 +136,8 @@ class AgentRuntime:
                     if isinstance(project, dict) and project.get("id"):
                         session["active_project_id"] = project["id"]
             return "I could not complete that request within the safe tool limit."
-        except (AgentError, ValueError, KeyError) as exc:
-            return f"I could not complete that request safely: {exc}"
+        except (AgentError, ValueError, KeyError):
+            return "I couldn't complete that step. Please clarify the chat or item you mean and try again."
 
     async def _remember_turn(self, actor_id: int, chat_id: int, user_text: str, response: str) -> None:
         conversation_id = await self.repository.create_or_get_conversation("business", actor_id, chat_id)
@@ -147,11 +153,15 @@ class AgentRuntime:
             return context.active_work_item is not None
         return True
 
-    async def _call_provider(self, prompt: str, context: list[str]) -> Any:
+    async def _call_provider(self, prompt: str, context: list[str], tools=None, tool_results=None) -> Any:
         """Call the configured provider through the existing usage budget."""
         budget = getattr(self.service, "budget", None)
-        if budget is None:
+        async def call():
+            if tools is not None:
+                return await self.planner.provider.decide(prompt, context, tools, tool_results or [])
             return await self.planner.provider.answer(prompt, context)
+        if budget is None:
+            return await call()
         estimate_input = max(1, (len(prompt) + sum(len(item) for item in context) + 3) // 4)
         estimate_output = 600
         input_rate = float(getattr(self.service, "input_price_per_million", 0.30))
@@ -159,8 +169,8 @@ class AgentRuntime:
         estimate = estimate_input * input_rate / 1_000_000 + estimate_output * output_rate / 1_000_000
         budget.reserve(estimate)
         try:
-            response = await self.planner.provider.answer(prompt, context)
-        except Exception:
+            response = await call()
+        except BaseException:
             budget.settle(0.0, estimate)
             raise
         actual_input = response.input_tokens or estimate_input

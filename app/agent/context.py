@@ -22,10 +22,16 @@ class AgentContext:
     repository: Any = None
     message_database: Any = None
     allowed_chat_ids: set[int] = field(default_factory=set)
+    telegram: Any = None
 
     def prompt_lines(self) -> list[str]:
         lines = [f"Actor: {self.actor_id}"]
         lines.append(f"Authorized source chat IDs: {sorted(self.allowed_chat_ids)}")
+        if self.session.get("last_source_hint"):
+            lines.append(f"Last selected Telegram source: {self.session['last_source_hint']}")
+        if self.session.get("last_window"):
+            lines.append(f"Last requested date window: {self.session['last_window']}")
+        lines.extend(f"Previous {row.get('role', 'user')}: {str(row.get('content', ''))[:2000]}" for row in self.recent_turns[-8:])
         if self.active_project:
             lines.append(f"Active project: {self.active_project.get('project_key') or self.active_project.get('name')}")
         if self.active_work_item:
@@ -49,15 +55,13 @@ class ContextRetriever:
         self.allowed_chat_ids_provider = allowed_chat_ids_provider
 
     async def retrieve(self, actor_id: int, chat_id: int, chat_type: str, query: str, session: dict[str, Any] | None = None) -> AgentContext:
-        context = AgentContext(actor_id, chat_id, chat_type, session=session or {}, service=self.service, repository=self.repository, message_database=self.message_database)
-        if self.allowed_chat_ids_provider is not None:
+        context = AgentContext(actor_id, chat_id, chat_type, session=session if session is not None else {}, service=self.service, repository=self.repository, message_database=self.message_database)
+        # Owner-selected sources are not grants to other bot members or groups.
+        if self.allowed_chat_ids_provider is not None and actor_id == self.service.access.owner_id and chat_type == "private":
             context.allowed_chat_ids = {int(value) for value in self.allowed_chat_ids_provider()}
         conversation_id = await self.repository.create_or_get_conversation("business", actor_id, chat_id)
         context.recent_turns = await self.repository.recent_turns(conversation_id, limit=8)
-        context.relevant_projects = await self.service.list_projects(actor_id, chat_id, chat_type)
-        context.relevant_work_items = await self.service.list_work_items(actor_id, chat_id, chat_type, "open", 20)
-        if self.message_database is not None and context.allowed_chat_ids and hasattr(self.message_database, "get_recent_messages"):
-            context.relevant_messages = await self.message_database.get_recent_messages(limit=20, allowed_chat_ids=context.allowed_chat_ids)
+        # Business and Telegram data are retrieved by explicit tools on demand.
         active_project_id = context.session.get("active_project_id")
         active_work_item_id = context.session.get("active_work_item_id")
         if active_project_id:

@@ -30,6 +30,12 @@ class ToolRegistry:
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self._tools))
 
+    def specifications(self) -> list[dict[str, Any]]:
+        return [{"type": "function", "function": {"name": tool.name,
+                 "description": tool.description,
+                 "parameters": tool.input_schema.model_json_schema()}}
+                for tool in self._tools.values()]
+
     async def execute(self, name: str, arguments: dict[str, Any], context: Any) -> ToolResult:
         definition = self.get(name)
         try:
