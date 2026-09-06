@@ -51,6 +51,10 @@ class PriorityClassification(BaseModel):
         default="unknown",
         description="Independent work/message type: task, update, question, decision, waiting, blocker, chatter, or unknown.",
     )
+    critical_impact: bool = Field(
+        default=False,
+        description="True when the business's critical-impact definition is met (see BusinessProfile.impact_definition).",
+    )
     ai_confidence: float = Field(
         default=0.0,
         ge=0.0,
@@ -131,7 +135,7 @@ class Situation(BaseModel):
     summary: str = ""
     current_action: Optional[str] = None
     dependency: Optional[str] = None
-    guest_affected: bool = False
+    critical_impact: bool = False
     responsible: Optional[str] = None
     message_count: int = 1
     source_message_ids: list[int] = Field(default_factory=list)
@@ -151,7 +155,7 @@ class SituationDecision(BaseModel):
     status: SituationStatus = "open"
     current_action: Optional[str] = None
     dependency: Optional[str] = None
-    guest_affected: bool = False
+    critical_impact: bool = False
     responsible: Optional[str] = None
     reason: str = ""
 

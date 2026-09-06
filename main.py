@@ -859,8 +859,8 @@ class TelegramPriorityApp:
             buttons, row = [], []
             for s in situations[:10]:
                 icon = priority_icon.get(s.priority, "🟡")
-                guest = " 🧑‍🤝‍🧑" if s.guest_affected else ""
-                lines.append(f"\n{icon} <b>{escape(clip_text(s.title, 60))}</b>{guest}")
+                impact = " ⚠️" if s.critical_impact else ""
+                lines.append(f"\n{icon} <b>{escape(clip_text(s.title, 60))}</b>{impact}")
                 lines.append(f"  <i>{escape(clip_text(s.chat_title, 40))} · {s.message_count} message(s) · updated {escape(s.last_update_at[:16])}</i>")
                 if s.current_action:
                     lines.append(f"  👉 {escape(clip_text(s.current_action, 90))}")
@@ -886,7 +886,7 @@ class TelegramPriorityApp:
                 f"<b>Status:</b> {status_label}",
                 f"<b>Priority:</b> {situation.priority}",
                 f"<b>Source:</b> {escape(situation.chat_title)}",
-                f"<b>Guest affected:</b> {'Yes' if situation.guest_affected else 'No'}",
+                f"<b>{escape(self.cfg.profile.business.impact_label)}:</b> {'Yes' if situation.critical_impact else 'No'}",
             ]
             if situation.responsible:
                 lines.append(f"<b>Responsible:</b> {escape(situation.responsible)}")

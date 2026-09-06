@@ -3,6 +3,20 @@
 
 user_name: "Choonvai"
 
+# Which business this assistant serves. Everything domain-specific lives here,
+# not in code -- see examples/user_profile.hotel.yaml and
+# examples/user_profile.farming.yaml for ready-made profiles you can copy over.
+business:
+  name: "Choonvai's workspace"
+  description: >-
+    a small operation coordinating daily work over Telegram across projects,
+    clients, and suppliers
+  impact_label: "Critical impact"
+  impact_definition: >-
+    the people or commitments this operation exists to serve are directly
+    affected -- a client, a delivery, or a deadline that has been promised
+  units: []
+
 high_priority_rules:
   - "University lecturer, professor, or teaching assistant messages"
   - "Assignment, exam, course registration, or deadline changes"

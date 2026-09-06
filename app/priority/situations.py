@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -32,17 +32,11 @@ REOPEN_WINDOW_HOURS = 72
 # "The same type of problem N times this week" (case study section 16).
 REPEATED_ISSUE_WINDOW_DAYS = 7
 REPEATED_ISSUE_THRESHOLD = 3
-_GUEST_WORDS = ("guest", "guests", "customer", "customers", "visitor", "visitors")
 _STOPWORDS = {
     "this", "that", "with", "from", "have", "need", "will", "please", "about",
     "there", "when", "what", "should", "could", "would", "still", "already",
     "again", "today", "tomorrow", "message", "thanks",
 }
-
-
-def _mentions_guest(text: str) -> bool:
-    lowered = (text or "").lower()
-    return any(word in lowered for word in _GUEST_WORDS)
 
 
 def _keywords(text: str) -> set[str]:
@@ -116,18 +110,19 @@ class SituationLinker:
             status="open",
             current_action=cls.action,
             dependency=None,
-            guest_affected=_mentions_guest(msg.text),
+            critical_impact=cls.critical_impact,
             responsible=cls.category or msg.chat_title,
             reason="No open situation exists yet for this chat.",
         )
 
     async def _link_ollama(self, msg: IncomingMessage, cls: PriorityClassification, open_situations: list[Situation]) -> SituationDecision:
+        business = self.cfg.profile.business
         options = "\n".join(
             f"- id={situation.id} | \"{situation.title}\" | status={situation.status} | latest: {situation.summary}"
             for situation in open_situations
         )
         system_prompt = (
-            "You track ongoing operational situations for a hotel management assistant. "
+            f"You track ongoing operational situations for {business.name}: {business.description}. "
             "Decide whether a new message continues one of the listed OPEN situations, "
             "resolves one, or is unrelated and starts a new situation. Only match a message "
             "to a situation if it is genuinely the same underlying issue -- do not merge "
@@ -136,7 +131,8 @@ class SituationLinker:
             '{"action":"new"|"continue"|"resolve","situation_id":integer or null,'
             '"title":"string or null","status":"open"|"monitoring"|"resolved",'
             '"current_action":"string or null","dependency":"string or null",'
-            '"guest_affected":boolean,"responsible":"string or null","reason":"string"}'
+            '"critical_impact":boolean,"responsible":"string or null","reason":"string"}'
+            f" critical_impact is true when: {business.impact_definition}."
         )
         user_prompt = (
             f"OPEN SITUATIONS in this chat:\n{options}\n\n"
@@ -181,7 +177,7 @@ class SituationLinker:
                 status=best.status,
                 current_action=cls.action or best.current_action,
                 dependency=best.dependency,
-                guest_affected=best.guest_affected or _mentions_guest(msg.text),
+                critical_impact=best.critical_impact or cls.critical_impact,
                 responsible=best.responsible,
                 reason=f"Heuristic keyword overlap ({best_overlap}) with an open situation.",
             )

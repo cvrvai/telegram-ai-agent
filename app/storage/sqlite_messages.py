@@ -20,7 +20,7 @@ def _situation_from_row(row: aiosqlite.Row) -> Situation:
         summary=row["summary"] or "",
         current_action=row["current_action"],
         dependency=row["dependency"],
-        guest_affected=bool(row["guest_affected"]),
+        critical_impact=bool(row["critical_impact"]),
         responsible=row["responsible"],
         message_count=int(row["message_count"] or 1),
         source_message_ids=json.loads(row["source_message_ids"] or "[]"),
@@ -112,7 +112,7 @@ class Database:
                     summary TEXT,
                     current_action TEXT,
                     dependency TEXT,
-                    guest_affected INTEGER DEFAULT 0,
+                    critical_impact INTEGER DEFAULT 0,
                     responsible TEXT,
                     message_count INTEGER DEFAULT 1,
                     source_message_ids TEXT NOT NULL DEFAULT '[]',
@@ -529,12 +529,12 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 "INSERT INTO situations (chat_id, chat_title, title, status, priority, summary, current_action, "
-                "dependency, guest_affected, responsible, message_count, source_message_ids, last_message_link, "
+                "dependency, critical_impact, responsible, message_count, source_message_ids, last_message_link, "
                 "started_at, last_update_at, resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     msg.chat_id, msg.chat_title, title, status, cls.priority, cls.summary,
                     decision.current_action or cls.action, decision.dependency,
-                    1 if decision.guest_affected else 0, decision.responsible or cls.category or msg.chat_title,
+                    1 if decision.critical_impact else 0, decision.responsible or cls.category or msg.chat_title,
                     1, json.dumps([msg.message_id]), msg.message_link, now, now, None,
                 ),
             )
@@ -558,13 +558,13 @@ class Database:
             resolved_at = msg.date.isoformat() if status == "resolved" else existing["resolved_at"]
             await db.execute(
                 "UPDATE situations SET status=?, priority=?, summary=?, current_action=?, dependency=?, "
-                "guest_affected=?, responsible=?, message_count=?, source_message_ids=?, last_message_link=?, "
+                "critical_impact=?, responsible=?, message_count=?, source_message_ids=?, last_message_link=?, "
                 "last_update_at=?, resolved_at=? WHERE id=?",
                 (
                     status, priority, cls.summary,
                     decision.current_action or cls.action or existing["current_action"],
                     decision.dependency if decision.dependency is not None else existing["dependency"],
-                    1 if (bool(existing["guest_affected"]) or decision.guest_affected) else 0,
+                    1 if (bool(existing["critical_impact"]) or decision.critical_impact) else 0,
                     decision.responsible or existing["responsible"],
                     int(existing["message_count"] or 1) + 1,
                     json.dumps(source_ids),

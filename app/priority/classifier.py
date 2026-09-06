@@ -37,9 +37,13 @@ class AIClassifier:
         med_rules = "\n".join(f"- {r}" for r in profile.medium_priority_rules)
         low_rules = "\n".join(f"- {r}" for r in profile.low_priority_rules)
         vips = ", ".join(profile.vip_senders) if profile.vip_senders else "None"
+        business = profile.business
+        units = ", ".join(business.units) if business.units else "Not specified"
         projects = ", ".join(profile.important_projects) if profile.important_projects else "None"
 
         return f"""You are an elite AI Executive Assistant and Notification Gatekeeper for {profile.user_name}.
+You support {business.name}: {business.description}
+Teams/departments/areas: {units}
 Your job is to analyze incoming Telegram messages and classify their priority, score, actionable items, and summary with surgical precision.
 
 === USER PRIORITY RULES ===
@@ -59,10 +63,10 @@ VIP SENDER LIST: {vips}
 * P0 (Score 90-100) - CRITICAL:
   - Immediate action/reply required NOW.
   - Critical emergencies, server downtime, financial/supplier blockers, urgent payment confirmation.
-  - Direct request from professor/boss with immediate deadline.
+  - Direct request from a VIP sender or decision-maker with an immediate deadline.
 
 * P1 (Score 70-89) - HIGH:
-  - Important tasks, assignment deadline changes, project decisions, code reviews, wireframe approvals.
+  - Important tasks, deadline changes, decisions, reviews, and approvals.
   - Direct questions addressed to the user requiring response within hours.
 
 * P2 (Score 40-69) - NORMAL:
@@ -77,11 +81,13 @@ An update may be P0 and a task may be P3. Do not infer type from priority.
 
 === CONTEXT EVALUATION INSTRUCTION ===
 Always evaluate context!
-- Example A: 'Meeting moved to 3 PM' in University or CloudKH group -> P1 (Score 80-90).
-- Example B: 'Barcelona match moved to 3 PM' in football/friends group -> P3 (Score 20).
+- The SAME words mean different things in different chats: a time change in a work/operations
+  group is high priority; the same sentence in a social group is noise. Judge by the chat and
+  the priority rules above, never by keywords alone.
 - Extract clear, actionable instructions in the `action` field if `needs_action` is true.
 - If a deadline or time is mentioned, extract it into the `deadline` field.
 - Provide a crisp 1-sentence `summary` focusing on what the user needs to know.
+- Set `critical_impact` true ONLY when: {business.impact_definition}
 """
 
     def _build_user_message(self, msg: IncomingMessage) -> str:
@@ -123,6 +129,7 @@ MESSAGE CONTENT:
             + '  "category": "string",\n'
              + '  "summary": "string",\n'
              + '  "message_type": "task" | "update" | "question" | "decision" | "waiting" | "blocker" | "chatter",\n'
+             + '  "critical_impact": boolean,\n'
              + '  "ai_confidence": number (0.0 to 1.0)\n'
             + "}"
         )
@@ -181,10 +188,12 @@ MESSAGE CONTENT:
         is_blocker = any(w in text for w in ["blocking", "blocked", "outage", "production down", "service disconnection"])
         is_question = "?" in text or any(w in text for w in ["can you", "could you", "please confirm"])
         is_task = any(w in text for w in ["please", "need to", "fix", "send", "prepare", "review", "approve", "finish"])
-        is_cloudkh = "cloudkh" in text or "cloudkh" in chat
-        is_uni = "university" in chat or "assignment" in text or "exam" in text
+        # No offline keyword table can know this business; the only domain
+        # signal available without the model is what the profile declared.
+        projects = [name.lower() for name in self.cfg.profile.important_projects if name]
+        is_key_project = any(name in text or name in chat for name in projects)
 
-        if is_urgent or is_blocker or (is_cloudkh and "approve" in text):
+        if is_urgent or is_blocker or (is_key_project and "approve" in text):
             return PriorityClassification(
                 priority="P0" if is_blocker or "emergency" in text or "production down" in text else "P1",
                 score=85,
@@ -192,20 +201,20 @@ MESSAGE CONTENT:
                 needs_action=True,
                 action="Review message and respond",
                 deadline=None,
-                category="project" if is_cloudkh else "general",
+                category="project" if is_key_project else "general",
                 summary=f"[{msg.chat_title}] {msg.text[:100]}",
                 message_type="blocker" if is_blocker else ("question" if is_question and not is_task else "task"),
                 ai_confidence=0.35,
             )
-        elif is_uni or is_cloudkh:
+        elif is_key_project:
             return PriorityClassification(
                 priority="P2",
                 score=60,
-                reason=reason or "Keyword heuristic: Project/University update.",
+                reason=reason or "Keyword heuristic: key project update.",
                 needs_action=False,
                 action=None,
                 deadline=None,
-                category="project" if is_cloudkh else "university",
+                category="project",
                 summary=f"[{msg.chat_title}] {msg.text[:100]}",
                 message_type="update",
                 ai_confidence=0.30,

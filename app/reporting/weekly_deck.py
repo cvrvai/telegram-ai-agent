@@ -16,6 +16,7 @@ from typing import Any, Optional
 from pptx import Presentation
 from pptx.util import Inches
 
+from config import config
 from app.core.models import Situation
 from app.priority.briefs import _clip
 
@@ -79,6 +80,9 @@ class WeeklyDeckBuilder:
         self.business_repository = business_repository
 
     async def build(self, output_path: str, allowed_chat_ids: Optional[set[int]] = None, title: str = "Weekly Management Brief") -> str:
+        # Slide title comes from the business profile: "Guest / Customer Issues"
+        # for a hotel, "Crop / Livestock Issues" for a farm.
+        impact_label = f"{config.profile.business.impact_label} Issues"
         now = datetime.now(timezone.utc)
         week_start = now - timedelta(days=7)
         situations = await self.db.list_situations_active_since(week_start.isoformat(), allowed_chat_ids)
@@ -87,7 +91,7 @@ class WeeklyDeckBuilder:
         open_situations = [s for s in situations if s.status != "resolved"]
         resolved = [s for s in situations if s.status == "resolved"]
         critical = [s for s in open_situations if s.priority == "P0"]
-        guest_issues = [s for s in situations if s.guest_affected]
+        impact_issues = [s for s in situations if s.critical_impact]
         major_issues = critical or [s for s in open_situations if s.priority == "P1"][:5] or open_situations[:5]
 
         by_group: dict[str, list[Situation]] = defaultdict(list)
@@ -122,8 +126,8 @@ class WeeklyDeckBuilder:
             [f"Approve {str(a.get('action_type', 'draft')).title()} draft #{a.get('id')}" for a in pending_actions[:10]],
         )
         _add_bullet_slide(
-            prs, "Guest / Customer Issues",
-            [f"{s.chat_title} — {_clip(s.title, 70)} ({s.status})" for s in guest_issues[:10]],
+            prs, impact_label,
+            [f"{s.chat_title} — {_clip(s.title, 70)} ({s.status})" for s in impact_issues[:10]],
         )
 
         followups = [f"{s.chat_title}: {_clip(s.current_action, 70)}" for s in open_situations if s.current_action]

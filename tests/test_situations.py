@@ -35,7 +35,7 @@ def _message(text: str, chat_id: int = 1001, message_id: int = 1, chat_title: st
     )
 
 
-def _classification(message_type: str = "task", priority: str = "P1", summary: str = "Room 305 AC is broken") -> PriorityClassification:
+def _classification(message_type: str = "task", priority: str = "P1", summary: str = "Room 305 AC is broken", critical_impact: bool = False) -> PriorityClassification:
     return PriorityClassification(
         priority=priority,
         score=80,
@@ -45,6 +45,7 @@ def _classification(message_type: str = "task", priority: str = "P1", summary: s
         category="engineering",
         summary=summary,
         message_type=message_type,
+        critical_impact=critical_impact,
     )
 
 
@@ -66,12 +67,12 @@ class LinkingWithoutOpenSituationsTests(unittest.IsolatedAsyncioTestCase):
     async def test_seeds_a_new_situation_with_no_llm_call(self) -> None:
         linker = SituationLinker(AppConfig())
         msg = _message("Room 305 AC broken, guest is unhappy")
-        cls = _classification()
+        cls = _classification(critical_impact=True)
         with patch("httpx.AsyncClient") as fake_client:
             decision = await linker.link(msg, cls, open_situations=[])
         fake_client.assert_not_called()
         self.assertEqual(decision.action, "new")
-        self.assertTrue(decision.guest_affected)
+        self.assertTrue(decision.critical_impact)
         self.assertEqual(decision.current_action, cls.action)
 
 
@@ -97,7 +98,7 @@ class LinkingWithOpenSituationsTests(unittest.IsolatedAsyncioTestCase):
         situation = self._open_situation()
 
         def respond(request):
-            body = {"action": "continue", "situation_id": 7, "status": "open", "current_action": "Waiting for part", "dependency": "Spare part", "guest_affected": True, "responsible": "Engineering", "reason": "same AC issue"}
+            body = {"action": "continue", "situation_id": 7, "status": "open", "current_action": "Waiting for part", "dependency": "Spare part", "critical_impact": True, "responsible": "Engineering", "reason": "same AC issue"}
             return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(body)}}]})
 
         original = httpx.AsyncClient

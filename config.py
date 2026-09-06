@@ -13,10 +13,31 @@ from pydantic_settings import BaseSettings
 load_dotenv()
 
 
+class BusinessProfile(BaseSettings):
+    """What business this assistant serves.
+
+    Everything domain-specific lives here rather than in code, so one codebase
+    can run a hotel, a farm, or anything else. `impact_definition` in
+    particular replaces what used to be a hardcoded "is a guest mentioned?"
+    keyword check: the model decides using this description instead.
+    """
+
+    name: str = "the business"
+    description: str = "a business whose team coordinates daily operations over chat"
+    # The single "does this hurt what the business exists to serve?" dimension.
+    impact_label: str = "Critical impact"
+    impact_definition: str = (
+        "the people or assets the business exists to serve are directly affected "
+        "(for a hotel: a guest's stay; for a farm: crops, livestock, or a delivery commitment)"
+    )
+    units: List[str] = Field(default_factory=list, description="Departments/teams/areas, e.g. Engineering, Housekeeping or Irrigation, Harvest")
+
+
 class UserProfile(BaseSettings):
     """User profile and prioritization rules."""
 
     user_name: str = "User"
+    business: BusinessProfile = Field(default_factory=BusinessProfile)
     high_priority_rules: List[str] = Field(default_factory=lambda: [
         "Deadlines, urgent requests, payment/invoice blockers",
         "Direct mentions or questions requiring user approval/reply",

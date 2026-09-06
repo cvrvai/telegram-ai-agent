@@ -1,0 +1,46 @@
+# Business profile: FARMING
+# Copy over user_profile.yaml to run the same assistant for a farm.
+# Only this file changes -- no code differences between the two businesses.
+
+user_name: "Owner"
+
+business:
+  name: "Choonvai Farm"
+  description: >-
+    a farm whose crews coordinate daily operations over Telegram:
+    irrigation, planting and harvest, livestock health, equipment, and buyer deliveries
+  impact_label: "Crop/livestock at risk"
+  impact_definition: >-
+    crops, livestock, or a delivery commitment to a buyer is directly threatened --
+    including water loss, disease, spoilage, weather damage, or a missed harvest window
+  units:
+    - "Irrigation"
+    - "Harvest"
+    - "Livestock"
+    - "Equipment"
+    - "Sales & Delivery"
+
+high_priority_rules:
+  - "Crop disease, pest outbreak, or livestock health emergencies"
+  - "Irrigation or water supply failure"
+  - "Equipment breakdown during planting or harvest"
+  - "Weather events threatening a crop or a harvest window"
+  - "Buyer delivery commitments at risk, or payment/pricing decisions"
+
+medium_priority_rules:
+  - "Routine field, yield, and growth-stage updates"
+  - "Scheduled maintenance and input (seed/feed/fertilizer) planning"
+  - "Labour scheduling and crew coordination"
+
+low_priority_rules:
+  - "Greetings, thanks, acknowledgements, and casual chat"
+  - "Stickers, emoji-only messages, and memes"
+  - "Market chatter with no action for us"
+
+vip_senders:
+  - "Owner"
+  - "Farm Manager"
+  - "Buyer"
+
+important_projects: []
+ignore_chats: []
