@@ -79,6 +79,12 @@ class OpenAICompatibleProvider:
             "Ask only about details a tool genuinely requires and that you cannot infer; optional details take sensible defaults. "
             "Once the user confirms or tells you to go ahead, call the tool immediately in that same turn. "
             "Never reply that you are 'ready to' or 'about to' do something a tool can do now: either call the tool or ask one specific question."
+            " OUTPUT STYLE. Telegram renders only *bold*, _italic_, `code` and links. "
+            "Never use markdown headings (#, ##, ###), tables, pipes as columns, or HTML tags such as <br>: they arrive as literal characters. "
+            "Structure with short bullet lines instead. "
+            "Be brief and decision-focused: lead with what matters, keep to a handful of lines, and stop. "
+            "Do not transcribe or quote raw chat messages back; report what they mean. "
+            "Mark severity with a leading emoji when it helps a decision, and omit sections that have nothing to report."
         )}]
         # Real role-tagged turns instead of one flattened blob: this is what lets the
         # model see that the user already answered a question it asked earlier.

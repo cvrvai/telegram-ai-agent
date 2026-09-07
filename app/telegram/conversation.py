@@ -11,6 +11,7 @@ import httpx
 from telethon import Button
 
 from app.agent.state import now
+from app.telegram.formatting import render_for_telegram
 from app.telegram.sources import InteractionRequired
 from app.usage.budget import BudgetExceeded
 
@@ -35,6 +36,7 @@ def chunks(text, limit=3500):
 async def _send_formatted(send, text, **kwargs):
     """Render the model's markdown. Falls back to plain text if the markup is
     malformed, so a stray asterisk can never swallow the reply."""
+    text = render_for_telegram(text)
     try:
         return await send(text, parse_mode="md", **kwargs)
     except Exception:
