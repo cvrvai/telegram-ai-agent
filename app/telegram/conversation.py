@@ -32,6 +32,15 @@ def chunks(text, limit=3500):
         yield "".join(part)
 
 
+async def _send_formatted(send, text, **kwargs):
+    """Render the model's markdown. Falls back to plain text if the markup is
+    malformed, so a stray asterisk can never swallow the reply."""
+    try:
+        return await send(text, parse_mode="md", **kwargs)
+    except Exception:
+        return await send(text, parse_mode=None, **kwargs)
+
+
 class TelegramConversation:
     def __init__(self, runtime, sources, store, timeout=600):
         self.runtime, self.sources, self.store, self.timeout = runtime, sources, store, timeout
@@ -143,9 +152,9 @@ class TelegramConversation:
                             action_id = pending_draft["id"]
                             buttons = [[Button.inline("✅ Approve", data=f"action_approve_{action_id}".encode()),
                                         Button.inline("❌ Reject", data=f"action_deny_{action_id}".encode())]]
-                        await progress.edit(parts[0], parse_mode=None, buttons=buttons)
+                        await _send_formatted(progress.edit, parts[0], buttons=buttons)
                         for part in parts[1:]:
-                            await event.respond(part, parse_mode=None)
+                            await _send_formatted(event.respond, part)
                         # A tool may have produced a document (the weekly deck).
                         # Agents can only return text, so the file is handed over
                         # via the session and sent here.

@@ -76,12 +76,12 @@ class ProviderDecisionPlanner:
 
 
 class AgentRuntime:
-    def __init__(self, service: Any, repository: Any, provider: AIProvider, message_database: Any = None, registry: ToolRegistry | None = None, policy: PolicyEngine | None = None, max_rounds: int = 4, timeout_seconds: float = 45.0, allowed_chat_ids_provider: Callable[[], set[int]] | None = None, google_account: Any = None) -> None:
+    def __init__(self, service: Any, repository: Any, provider: AIProvider, message_database: Any = None, registry: ToolRegistry | None = None, policy: PolicyEngine | None = None, max_rounds: int = 4, timeout_seconds: float = 45.0, allowed_chat_ids_provider: Callable[[], set[int]] | None = None, google_account: Any = None, chat_names_provider: Callable[[], dict] | None = None) -> None:
         self.service = service
         self.repository = repository
         self.registry = registry or ToolRegistry()
         self.policy = policy or PolicyEngine()
-        self.retriever = ContextRetriever(service, repository, message_database, allowed_chat_ids_provider, google_account=google_account)
+        self.retriever = ContextRetriever(service, repository, message_database, allowed_chat_ids_provider, google_account=google_account, chat_names_provider=chat_names_provider)
         self.planner = ProviderDecisionPlanner(provider, self._call_provider, self.registry)
         self.telegram = None
         self.max_rounds = max(1, max_rounds)

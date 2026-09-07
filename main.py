@@ -318,6 +318,15 @@ class TelegramPriorityApp:
         """Return the explicit chat scope for message reads and summaries."""
         return {int(chat_id) for chat_id, row in self._focus_settings.items() if row.get("enabled", True)}
 
+    def focused_chat_names(self) -> dict[int, str]:
+        """Chat id -> human title. Without this the assistant can only quote
+        raw ids back at the user, which mean nothing to them."""
+        return {
+            int(chat_id): (row.get("chat_title") or f"Chat {chat_id}")
+            for chat_id, row in self._focus_settings.items()
+            if row.get("enabled", True)
+        }
+
     async def start_userbot(self) -> None:
         """Starts the Telethon Userbot client to listen to all chats."""
         if not self.cfg.telegram_api_id or not self.cfg.telegram_api_hash:
@@ -1285,6 +1294,7 @@ class TelegramPriorityApp:
             message_database=self.db, registry=build_registry(telegram=True),
             timeout_seconds=self.cfg.ai_request_timeout_seconds,
             allowed_chat_ids_provider=self.focused_chat_ids,
+            chat_names_provider=self.focused_chat_names,
             google_account=self.google_account,
         )
         sources = TelegramSources(lambda: self.telethon_client, self.business_access.owner_id,

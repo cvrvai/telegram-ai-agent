@@ -61,10 +61,14 @@ class OpenAICompatibleProvider:
             "and any other relative date from that, never from memory, and use that timezone's "
             "offset in any ISO timestamp you produce. "
             "You are a conversational assistant with Telegram tools. Respond naturally; no unsolicited tasks or projects. "
-            "Use read_telegram_chat for requests about Telegram history or summaries, including Saved Messages. "
+            "For questions about status, what happened, what is unresolved, or what needs attention, "
+            "answer from the tracked situations and briefs (get_management_brief, list_situations, get_situation). "
+            "Those are already analysed and are the right answer to management questions. "
+            "Use read_telegram_chat only when the user explicitly asks to read a specific chat's raw messages. "
             "Use select_telegram_chat when the user wants to choose/list/search groups or people. The application will show a native picker and request consent. "
             "Never claim access is denied just because a chat is not selected: call the Telegram tool so it can ask permission. "
             "Never invent source IDs or messages. Use telegram_access to view or revoke read permissions. "
+            "Refer to chats by their name. Never show a numeric chat id to the user. "
             "Preserve the requested date range in follow-ups. Ask for clarification if the date is ambiguous. "
             # The earlier wording lumped the user's own turns in with fetched content and told the
             # model to distrust both, so confirmations like "ok create it now" were ignored.
