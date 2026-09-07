@@ -265,6 +265,19 @@ class TelegramPriorityApp:
 
         return cls
 
+    async def _announce_google_connected(self, user_id: int) -> None:
+        """Confirm the connection in Telegram: the OAuth flow finishes in a
+        browser tab, so without this the chat gives no sign it worked."""
+        lines = [
+            "✅ <b>Google account connected</b>",
+            "",
+            "Calendar and Gmail are now available. Try:",
+            "• <i>What's on my calendar this week?</i>",
+            "• <i>Summarize my unread emails</i>",
+            "• <i>Schedule a meeting with Daivai tomorrow at 9am</i>",
+        ]
+        await self.notifier.send_message("\n".join(lines))
+
     async def _check_repeated_issue(self, msg: IncomingMessage, decision, new_situation_id: int) -> None:
         """Fires once, the moment a chat crosses the repeat threshold -- not
         again on the 4th, 5th, ... occurrence, so this stays one alert
@@ -333,6 +346,7 @@ class TelegramPriorityApp:
                 # The server's threads schedule work back onto this loop, where
                 # the Motor client and Telethon clients actually live.
                 loop=asyncio.get_running_loop(),
+                on_google_connected=self._announce_google_connected,
             )
             self.dashboard_thread = threading.Thread(target=self.dashboard_server.serve_forever, name="dashboard", daemon=True)
             self.dashboard_thread.start()

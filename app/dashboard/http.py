@@ -16,7 +16,7 @@ from app.usage.budget import UsageBudget
 
 
 class DashboardServer(ThreadingHTTPServer):
-    def __init__(self, repository: BusinessRepository, budget: UsageBudget, host: str = "127.0.0.1", port: int = 3141, token: Optional[str] = None, schedules: list[str] | None = None, default_user_id: int | None = None, google_account: Optional[object] = None, loop: Optional[object] = None):
+    def __init__(self, repository: BusinessRepository, budget: UsageBudget, host: str = "127.0.0.1", port: int = 3141, token: Optional[str] = None, schedules: list[str] | None = None, default_user_id: int | None = None, google_account: Optional[object] = None, loop: Optional[object] = None, on_google_connected: Optional[object] = None):
         self.dashboard_service = DashboardService(repository, budget, schedules, default_user_id)
         self.dashboard_token = token
         self.google_account = google_account
@@ -24,6 +24,9 @@ class DashboardServer(ThreadingHTTPServer):
         # its own threads, so coroutines must be scheduled back onto that loop
         # rather than run on a fresh one ("attached to a different loop").
         self.main_loop = loop
+        # Without this the OAuth flow ends in the browser and Telegram stays
+        # silent, leaving the user unsure whether it actually worked.
+        self.on_google_connected = on_google_connected
         super().__init__((host, port), self._handler())
 
     def _handler(self):
@@ -73,7 +76,14 @@ class DashboardServer(ThreadingHTTPServer):
                 code = query.get("code", [""])[0]
                 state = query.get("state", [""])[0]
                 try:
-                    self._await(server.google_account.handle_callback(code, state))
+                    connected_user_id = self._await(server.google_account.handle_callback(code, state))
+                    if server.on_google_connected is not None:
+                        try:
+                            self._await(server.on_google_connected(connected_user_id))
+                        except Exception:
+                            # A failed notification must not turn a successful
+                            # connection into an error page.
+                            pass
                     self._send(200, "text/html; charset=utf-8", page.format("<h1>&#9989; Google account connected</h1><p>You can close this tab and return to Telegram.</p>"))
                 except Exception as exc:
                     self._send(400, "text/html; charset=utf-8", page.format(f"<h1>Could not connect Google</h1><p>{html.escape(str(exc))}</p>"))
