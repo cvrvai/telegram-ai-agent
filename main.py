@@ -1338,7 +1338,7 @@ class TelegramPriorityApp:
             if not access.allowed:
                 # A private /pair request records a request for administrator
                 # review; it never grants access automatically.
-                if event.is_private and text_lower in {"/pair", "pair", "/request-access"} and user_id is not None:
+                if event.is_private and text_lower in {"/pair", "/request-access"} and user_id is not None:
                     code = await self.business_repository.create_pairing(user_id, getattr(event, "sender", None) and getattr(event.sender, "first_name", ""))
                     await self.notifier.send_message(f"🔐 Pairing request: <b>{code}</b> (user {user_id})")
                     await event.respond(f"Your access request was sent for administrator approval. Request code: {code}")
@@ -1536,7 +1536,7 @@ class TelegramPriorityApp:
                 else:
                     await event.respond("⚠️ Unknown assistant. Send <code>/assistant</code> to see available assistants.", parse_mode="HTML")
                 return
-            if text_lower in {"/integrations", "integrations"}:
+            if text_lower == "/integrations":
                 statuses = "\n".join(f"• {name.title()}: {'configured' if self.integrations.configured(name) else 'not configured'}" for name in ("email", "calendar", "crm", "task"))
                 await event.respond(f"🔌 <b>Business integrations</b>\n\n{statuses}\n\nConnectors are used only after an explicit approval.", parse_mode="HTML", buttons=get_main_menu())
                 return
@@ -1547,7 +1547,7 @@ class TelegramPriorityApp:
                 except PermissionError:
                     await event.respond("🔒 Access not approved.")
                 return
-            if text_lower in {"/departments", "departments"}:
+            if text_lower == "/departments":
                 rows = await self.business_assistant.list_departments(user_id, event.chat_id, chat_type)
                 body = "\n".join(f"• <b>#{escape(str(row['id']))}</b> {escape(row['name'])}" for row in rows) or "No departments yet."
                 await event.respond("🏢 <b>Departments</b>\n\n" + body, parse_mode="HTML", buttons=get_main_menu())
@@ -1562,7 +1562,7 @@ class TelegramPriorityApp:
                 except PermissionError:
                     await event.respond("🔒 Access not approved.")
                 return
-            if text_lower in {"/projects", "projects"}:
+            if text_lower == "/projects":
                 await render_projects_view(event)
                 return
             if text_lower.startswith("/ptask "):
@@ -1646,10 +1646,10 @@ class TelegramPriorityApp:
                 except PermissionError:
                     await event.respond("🔒 This assistant is available only to approved users and groups.")
                 return
-            if text_lower in {"/tasks", "tasks", "✅ tasks", "my work", "work", "✅ my work"}:
+            if text_lower in {"/tasks", "✅ tasks", "✅ my work"}:
                 await render_tasks_view(event)
                 return
-            if text_lower in {"/access", "access"}:
+            if text_lower == "/access":
                 await render_access_view(event)
                 return
             if text_lower.startswith("/done "):
@@ -1671,7 +1671,7 @@ class TelegramPriorityApp:
                 except (ValueError, PermissionError):
                     await event.respond("Usage: <code>/remind 2026-09-04T18:00:00+07:00 Call client</code>", parse_mode="HTML")
                 return
-            if text_lower in {"/reminders", "reminders", "⏰ reminders"}:
+            if text_lower in {"/reminders", "⏰ reminders"}:
                 await render_reminders_view(event)
                 return
             if text_lower.startswith("/web "):
@@ -1723,7 +1723,7 @@ class TelegramPriorityApp:
                 except PermissionError:
                     await event.respond("🔒 Only approved users can create outbound drafts.")
                 return
-            if text_lower in {"/connectgoogle", "connect google"}:
+            if text_lower == "/connectgoogle":
                 if user_id != self.business_access.owner_id or not event.is_private:
                     await event.respond("🔒 Only the owner can connect Google, from the private bot chat.")
                     return
@@ -1733,7 +1733,7 @@ class TelegramPriorityApp:
                 except RuntimeError as exc:
                     await event.respond(f"⚠️ {escape(str(exc))}", parse_mode="HTML")
                 return
-            if text_lower in {"/googlestatus", "google status"}:
+            if text_lower == "/googlestatus":
                 if user_id != self.business_access.owner_id or not event.is_private:
                     await event.respond("🔒 Only the owner can view the Google connection status.")
                     return
@@ -1747,7 +1747,7 @@ class TelegramPriorityApp:
                 await self.google_account.disconnect(user_id)
                 await event.respond("🔌 Google account disconnected.")
                 return
-            if text_lower in {"/calendar", "calendar", "📅 calendar"}:
+            if text_lower in {"/calendar", "📅 calendar"}:
                 if user_id != self.business_access.owner_id or not event.is_private:
                     await event.respond("🔒 Only the owner can view the connected Google Calendar.")
                     return
@@ -1768,7 +1768,7 @@ class TelegramPriorityApp:
                 lines = ["📅 <b>Upcoming events</b>"] + [f"• {escape(item['summary'])} — {escape(item['start'] or '')}" for item in events]
                 await event.respond("\n".join(lines), parse_mode="HTML", buttons=get_main_menu())
                 return
-            if text_lower in {"/inbox", "inbox"}:
+            if text_lower == "/inbox":
                 if user_id != self.business_access.owner_id or not event.is_private:
                     await event.respond("🔒 Only the owner can view the connected Gmail inbox.")
                     return
@@ -1842,65 +1842,65 @@ class TelegramPriorityApp:
                     lines.append(f"<b>{role}:</b> {escape(clip_text(match.get('content', ''), 220))}")
                 await event.respond("\n\n".join(lines), parse_mode="HTML", buttons=get_main_menu())
                 return
-            if text_lower in {"/new", "new", "new chat"}:
+            if text_lower == "/new":
                 try:
                     await assistant.reset_conversation(user_id, event.chat_id, chat_type)
                     await event.respond("💬 New conversation started. Previous turns were removed from this chat memory.", buttons=get_main_menu())
                 except PermissionError:
                     await event.respond("🔒 This assistant is available only to approved users and groups.")
                 return
-            if text_lower in {"/forget", "forget"}:
+            if text_lower == "/forget":
                 await event.respond("To delete all of your assistant memory, send `/forget all`.", parse_mode="HTML", buttons=get_main_menu())
                 return
-            if text_lower in {"/forget all", "forget all"}:
+            if text_lower == "/forget all":
                 try:
                     deleted = await assistant.forget_memory(user_id, event.chat_id, chat_type)
                     await event.respond(f"🗑️ Deleted {deleted} saved conversation(s) for your account.", buttons=get_main_menu())
                 except PermissionError:
                     await event.respond("🔒 This assistant is available only to approved users and groups.")
                 return
-            if text_lower in {"/p0", "p0", "/urgent", "urgent", "/emergency", "emergency"}:
+            if text_lower in {"/p0", "/urgent", "/emergency"}:
                 await render_tier_view(event, "P0")
                 return
-            if text_lower in {"/p1", "p1", "/important", "important"}:
+            if text_lower in {"/p1", "/important"}:
                 await render_tier_view(event, "P1")
                 return
-            if text_lower in {"/p2", "p2", "/updates", "updates"}:
+            if text_lower in {"/p2", "/updates"}:
                 await render_tier_view(event, "P2")
                 return
-            if text_lower in {"/p3", "p3", "/noise", "noise", "/chatter", "chatter"}:
+            if text_lower in {"/p3", "/noise", "/chatter"}:
                 await render_tier_view(event, "P3")
                 return
 
             # 3. Group summary command
-            if text_lower in ("/groups", "groups", "group", "by group", "/group"):
+            if text_lower in ("/groups", "/group"):
                 await render_groups_view(event)
                 return
 
             # 3a. Situations: issues fused from multiple messages, not raw message list
-            if text_lower in {"/situations", "situations", "🔥 situations"}:
+            if text_lower in {"/situations", "🔥 situations"}:
                 await render_situations_view(event)
                 return
 
             # 3b. Management brief: current state, or a "what happened X" retrospective
-            if text_lower in {"/brief", "brief", "📋 brief", "management brief", "daily brief", "my actions", "your actions", "what should i do today", "todo", "to-do", "to do"}:
+            if text_lower in {"/brief", "📋 brief"}:
                 await render_brief_view(event)
                 return
-            if text_lower in {"/today", "what happened today", "today's brief", "todays brief"}:
+            if text_lower == "/today":
                 await render_brief_view(event, "today")
                 return
-            if text_lower in {"/yesterday", "what happened yesterday"}:
+            if text_lower == "/yesterday":
                 await render_brief_view(event, "yesterday")
                 return
-            if text_lower in {"/week", "this week", "what happened this week"}:
+            if text_lower == "/week":
                 await render_brief_view(event, "week")
                 return
-            if text_lower in {"/month", "this month", "what happened this month"}:
+            if text_lower == "/month":
                 await render_brief_view(event, "month")
                 return
 
             # 3c. Weekly meeting deck: a .pptx built from this week's situations
-            if text_lower in {"/weeklyreport", "/meetingdeck", "weekly report", "weekly presentation", "prepare this week's meeting presentation", "prepare the weekly presentation"}:
+            if text_lower in {"/weeklyreport", "/meetingdeck"}:
                 if user_id != self.business_access.owner_id or not event.is_private:
                     await event.respond("🔒 Only the owner can generate the weekly management deck.")
                     return
@@ -1924,7 +1924,7 @@ class TelegramPriorityApp:
             # 4. Instant Summary / Digest command
             if (
                 text_lower.startswith(("/digest", "/summary"))
-                or text in ("📋 Instant Digest", "digest", "summary", "summarize")
+                or text == "📋 Instant Digest"
             ):
                 digest_text, stats = await self.digest_engine.generate_digest(self.focused_chat_ids())
                 if digest_text:
