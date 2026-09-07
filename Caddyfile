@@ -1,0 +1,8 @@
+# Terminates TLS for the dashboard and the Google OAuth callback.
+# Caddy obtains and renews a Let's Encrypt certificate automatically, which is
+# what makes GOOGLE_OAUTH_REDIRECT_URI valid: Google rejects plain HTTP and
+# bare IP addresses for redirect URIs.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy bot:3141
+}

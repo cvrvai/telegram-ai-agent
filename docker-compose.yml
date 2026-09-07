@@ -18,7 +18,10 @@ services:
     volumes:
       - ./runtime:/app/data
     ports:
-      - "3141:3141"
+      # Loopback only. On a server the dashboard is reached through the
+      # Caddy reverse proxy (docker-compose.prod.yml), never directly;
+      # locally this is still http://localhost:3141.
+      - "127.0.0.1:3141:3141"
 
   mongo:
     image: mongo:7

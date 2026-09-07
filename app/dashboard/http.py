@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import secrets
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
@@ -41,7 +42,10 @@ class DashboardServer(ThreadingHTTPServer):
                     return False
                 supplied = self.headers.get("Authorization", "")
                 bearer = supplied.removeprefix("Bearer ").strip() if supplied.startswith("Bearer ") else ""
-                return bearer == server.dashboard_token or query.get("token", [""])[0] == server.dashboard_token
+                # compare_digest, not ==: this endpoint faces the internet once
+                # deployed, and == leaks the token prefix through timing.
+                return (secrets.compare_digest(bearer, server.dashboard_token)
+                        or secrets.compare_digest(query.get("token", [""])[0], server.dashboard_token))
 
             def _send(self, status: int, content_type: str, body: str) -> None:
                 payload = body.encode("utf-8")
