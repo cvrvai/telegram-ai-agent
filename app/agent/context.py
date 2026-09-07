@@ -24,6 +24,7 @@ class AgentContext:
     allowed_chat_ids: set[int] = field(default_factory=set)
     telegram: Any = None
     google_account: Any = None
+    impact_label: str = "Critical impact"
 
     def history_messages(self) -> list[dict[str, Any]]:
         """Conversation turns as role-tagged messages for providers that take
@@ -65,7 +66,13 @@ class ContextRetriever:
         self.google_account = google_account
 
     async def retrieve(self, actor_id: int, chat_id: int, chat_type: str, query: str, session: dict[str, Any] | None = None) -> AgentContext:
-        context = AgentContext(actor_id, chat_id, chat_type, session=session if session is not None else {}, service=self.service, repository=self.repository, message_database=self.message_database, google_account=self.google_account)
+        try:
+            from config import config as _cfg
+            impact_label = _cfg.profile.business.impact_label
+        except Exception:
+            impact_label = "Critical impact"
+        context = AgentContext(actor_id, chat_id, chat_type, session=session if session is not None else {}, service=self.service, repository=self.repository, message_database=self.message_database, google_account=self.google_account,
+                               impact_label=impact_label)
         # Owner-selected sources are not grants to other bot members or groups.
         if self.allowed_chat_ids_provider is not None and actor_id == self.service.access.owner_id and chat_type == "private":
             context.allowed_chat_ids = {int(value) for value in self.allowed_chat_ids_provider()}

@@ -15,6 +15,16 @@ from app.integrations.google_tools import (
     summarize_inbox,
 )
 
+from app.priority.situation_tools import (
+    SituationIdInput,
+    SituationListInput,
+    WeeklyReportInput,
+    generate_weekly_report,
+    get_situation,
+    list_situations,
+    resolve_situation,
+)
+
 from .registry import ToolRegistry
 from .resolution import resolve_person, resolve_project, resolve_work_item
 from .schemas import RiskLevel, ToolDefinition
@@ -207,6 +217,10 @@ def build_registry(telegram: bool = False) -> ToolRegistry:
         # registry below, which would otherwise make these unreachable.
         ToolDefinition(name="create_calendar_event", description="Prepare a Google Calendar event for the owner to approve; does not create it directly. An online meeting automatically gets a Google Meet link; ask the user which they mean if it isn't clear from their message.", input_schema=CreateEventInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=True, approval_required=False, handler=create_calendar_event),
         ToolDefinition(name="send_email", description="Prepare an email for the owner to approve; does not send it directly.", input_schema=SendEmailInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=True, approval_required=False, handler=send_email),
+        ToolDefinition(name="list_situations", description="List tracked operational situations (ongoing issues fused from multiple messages). Use for 'what is unresolved', 'what needs my attention', 'any problems right now'.", input_schema=SituationListInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=False, approval_required=False, handler=list_situations),
+        ToolDefinition(name="get_situation", description="Full detail for one situation by id: status, responsible party, dependency, when it started, and its source messages. Use for 'who is responsible', 'when did this start', 'where did you get this'.", input_schema=SituationIdInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=False, approval_required=False, handler=get_situation),
+        ToolDefinition(name="resolve_situation", description="Mark a situation resolved once the user confirms it is done.", input_schema=SituationIdInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=True, approval_required=False, handler=resolve_situation),
+        ToolDefinition(name="generate_weekly_report", description="Build the weekly management PowerPoint from this week's situations and pending approvals, and send it to the chat. Use for 'prepare this week's meeting presentation'.", input_schema=WeeklyReportInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=True, approval_required=False, handler=generate_weekly_report),
         ToolDefinition(name="search_memory", description="Search the user's saved assistant conversation memory.", input_schema=HintInput, output_schema=JsonOutput, risk=read, required_permission="memory.read", side_effect=False, approval_required=False, handler=search_memory),
         ToolDefinition(name="change_work_status", description="Move a work item through the legal workflow.", input_schema=StatusInput, output_schema=JsonOutput, risk=write, required_permission="work.update", side_effect=True, approval_required=False, handler=change_work_status),
         ToolDefinition(name="change_priority", description="Change a work item's P0-P3 priority.", input_schema=PriorityInput, output_schema=JsonOutput, risk=write, required_permission="work.update", side_effect=True, approval_required=False, handler=change_priority),

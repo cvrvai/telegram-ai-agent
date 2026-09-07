@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import timezone
 from types import SimpleNamespace
 
@@ -108,6 +109,7 @@ class TelegramConversation:
                     # a run that never reached the button-rendering step below
                     # must never resurface on a later, unrelated turn.
                     session.pop("pending_draft_action", None)
+                    session.pop("pending_file", None)
                     initial = []
 
                     async def work():
@@ -144,6 +146,20 @@ class TelegramConversation:
                         await progress.edit(parts[0], parse_mode=None, buttons=buttons)
                         for part in parts[1:]:
                             await event.respond(part, parse_mode=None)
+                        # A tool may have produced a document (the weekly deck).
+                        # Agents can only return text, so the file is handed over
+                        # via the session and sent here.
+                        pending_file = session.pop("pending_file", None)
+                        if pending_file:
+                            try:
+                                await event.respond(pending_file.get("caption") or "", file=pending_file["path"], parse_mode=None)
+                            except Exception:
+                                logger.warning("Could not deliver generated file %s", pending_file.get("path"))
+                            finally:
+                                try:
+                                    os.unlink(pending_file["path"])
+                                except OSError:
+                                    pass
         except InteractionRequired as interaction:
             if progress:
                 await progress.edit("Choose the Telegram chat below." if interaction.state == "selecting" else "Please choose how to allow access below.", parse_mode=None)

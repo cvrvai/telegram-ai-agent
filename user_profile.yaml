@@ -1,57 +1,46 @@
-# User Profile and Priority Customization Rules
-# The AI Classifier uses these rules to contextualize incoming messages.
+# Business profile: FARMING
+# Copy over user_profile.yaml to run the same assistant for a farm.
+# Only this file changes -- no code differences between the two businesses.
 
-user_name: "Choonvai"
+user_name: "Owner"
 
-# Which business this assistant serves. Everything domain-specific lives here,
-# not in code -- see examples/user_profile.hotel.yaml and
-# examples/user_profile.farming.yaml for ready-made profiles you can copy over.
 business:
-  name: "Choonvai's workspace"
+  name: "Choonvai Farm"
   description: >-
-    a small operation coordinating daily work over Telegram across projects,
-    clients, and suppliers
-  impact_label: "Critical impact"
+    a farm whose crews coordinate daily operations over Telegram:
+    irrigation, planting and harvest, livestock health, equipment, and buyer deliveries
+  impact_label: "Crop/livestock at risk"
   impact_definition: >-
-    the people or commitments this operation exists to serve are directly
-    affected -- a client, a delivery, or a deadline that has been promised
-  units: []
+    crops, livestock, or a delivery commitment to a buyer is directly threatened --
+    including water loss, disease, spoilage, weather damage, or a missed harvest window
+  units:
+    - "Irrigation"
+    - "Harvest"
+    - "Livestock"
+    - "Equipment"
+    - "Sales & Delivery"
 
 high_priority_rules:
-  - "University lecturer, professor, or teaching assistant messages"
-  - "Assignment, exam, course registration, or deadline changes"
-  - "CloudKH project decisions, blockers, code reviews, design sign-offs, and architecture proposals"
-  - "Work, client, freelance, or commercial contract requests"
-  - "Payment, banking, invoice, billing, or supplier critical issues"
-  - "Messages explicitly asking for my immediate decision, approval, or answer"
-  - "Emergency, server downtime, security alerts, or production bugs"
+  - "Crop disease, pest outbreak, or livestock health emergencies"
+  - "Irrigation or water supply failure"
+  - "Equipment breakdown during planting or harvest"
+  - "Weather events threatening a crop or a harvest window"
+  - "Buyer delivery commitments at risk, or payment/pricing decisions"
 
 medium_priority_rules:
-  - "General project progress updates without immediate blocker"
-  - "Meeting notes, schedule summaries, or agendas"
-  - "Useful technical announcements, tools, or library updates"
-  - "Interesting group discussions relevant to active projects"
+  - "Routine field, yield, and growth-stage updates"
+  - "Scheduled maintenance and input (seed/feed/fertilizer) planning"
+  - "Labour scheduling and crew coordination"
 
 low_priority_rules:
-  - "Casual chatting, greetings (hi, gm, gn), jokes, banter, sports match discussions"
-  - "Memes, stickers, GIF reactions, emoji-only responses"
-  - "Repeated questions already answered"
-  - "Spam, automated broadcast ads, promotional newsletters"
+  - "Greetings, thanks, acknowledgements, and casual chat"
+  - "Stickers, emoji-only messages, and memes"
+  - "Market chatter with no action for us"
 
-# Known VIP senders (usernames or names that should get higher weight)
 vip_senders:
-  - "boss"
-  - "lecturer"
-  - "professor"
-  - "client"
-  - "team_lead"
+  - "Owner"
+  - "Farm Manager"
+  - "Buyer"
 
-# Key project keywords
-important_projects:
-  - "CloudKH"
-  - "University"
-  - "Thesis"
-  - "Work"
-
-# Chats or channels to completely ignore or mute (optional)
+important_projects: []
 ignore_chats: []
