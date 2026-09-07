@@ -34,6 +34,7 @@ from app.priority.classifier import AIClassifier
 from app.priority.situations import SituationLinker, detect_repeated_issue, REPEATED_ISSUE_WINDOW_DAYS, REPEATED_ISSUE_THRESHOLD
 from app.priority.briefs import BriefEngine
 from app.telegram.notifier import Notifier
+from app.telegram.failures import describe_action_failure
 from app.priority.digest import DigestEngine
 from app.telegram.scheduler import DigestScheduler
 from app.ai.provider import OpenAICompatibleProvider
@@ -2254,9 +2255,9 @@ class TelegramPriorityApp:
                                 await self.integrations.create_task(**payload)
                                 confirmation = "✅ External task created after approval."
                         await safe_edit_or_respond(event, confirmation, get_main_menu())
-                    except Exception:
-                        logger.exception("Approved outbound send failed")
-                        await safe_edit_or_respond(event, "⚠️ Approved, but Telegram could not deliver the message.", get_main_menu())
+                    except Exception as exc:
+                        logger.exception("Approved %s action failed", action.get("action_type") or "outbound")
+                        await safe_edit_or_respond(event, describe_action_failure(action.get("action_type"), exc), get_main_menu())
                 else:
                     await safe_edit_or_respond(event, "❌ Draft rejected; nothing was sent.", get_main_menu())
                 return
