@@ -585,8 +585,13 @@ class TelegramPriorityApp:
             )
 
         async def safe_edit_or_respond(event, text: str, buttons=None):
+            from telethon.errors import MessageNotModifiedError
             try:
                 await event.edit(text, parse_mode="HTML", buttons=buttons)
+            except MessageNotModifiedError:
+                # Re-selecting the view already on screen is a no-op, not a
+                # failure: falling through to respond() posted a duplicate card.
+                return
             except Exception:
                 await event.respond(text, parse_mode="HTML", buttons=buttons)
 
