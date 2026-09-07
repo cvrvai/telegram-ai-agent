@@ -16,10 +16,14 @@ from app.usage.budget import UsageBudget
 
 
 class DashboardServer(ThreadingHTTPServer):
-    def __init__(self, repository: BusinessRepository, budget: UsageBudget, host: str = "127.0.0.1", port: int = 3141, token: Optional[str] = None, schedules: list[str] | None = None, default_user_id: int | None = None, google_account: Optional[object] = None):
+    def __init__(self, repository: BusinessRepository, budget: UsageBudget, host: str = "127.0.0.1", port: int = 3141, token: Optional[str] = None, schedules: list[str] | None = None, default_user_id: int | None = None, google_account: Optional[object] = None, loop: Optional[object] = None):
         self.dashboard_service = DashboardService(repository, budget, schedules, default_user_id)
         self.dashboard_token = token
         self.google_account = google_account
+        # Motor/Telethon are bound to the bot's loop. This server answers on
+        # its own threads, so coroutines must be scheduled back onto that loop
+        # rather than run on a fresh one ("attached to a different loop").
+        self.main_loop = loop
         super().__init__((host, port), self._handler())
 
     def _handler(self):
@@ -44,6 +48,13 @@ class DashboardServer(ThreadingHTTPServer):
                 self.end_headers()
                 self.wfile.write(payload)
 
+            def _await(self, coro):
+                """Run a coroutine on the bot's loop when there is one; fall back to a
+                private loop for the standalone `main.py dashboard` command."""
+                if server.main_loop is not None and not server.main_loop.is_closed():
+                    return asyncio.run_coroutine_threadsafe(coro, server.main_loop).result(timeout=60)
+                return asyncio.run(coro)
+
             def _json_body(self) -> dict:
                 length = int(self.headers.get("Content-Length", "0"))
                 if length > 1_000_000:
@@ -62,7 +73,7 @@ class DashboardServer(ThreadingHTTPServer):
                 code = query.get("code", [""])[0]
                 state = query.get("state", [""])[0]
                 try:
-                    asyncio.run(server.google_account.handle_callback(code, state))
+                    self._await(server.google_account.handle_callback(code, state))
                     self._send(200, "text/html; charset=utf-8", page.format("<h1>&#9989; Google account connected</h1><p>You can close this tab and return to Telegram.</p>"))
                 except Exception as exc:
                     self._send(400, "text/html; charset=utf-8", page.format(f"<h1>Could not connect Google</h1><p>{html.escape(str(exc))}</p>"))
@@ -83,42 +94,42 @@ class DashboardServer(ThreadingHTTPServer):
                     self._send(401, "application/json", '{"error":"dashboard authentication required"}')
                     return
                 period = datetime.now(timezone.utc).strftime("%Y-%m")
-                snapshot = asyncio.run(server.dashboard_service.snapshot(period))
+                snapshot = self._await(server.dashboard_service.snapshot(period))
                 if parsed.path == "/api/status":
                     self._send(200, "application/json", json.dumps(snapshot))
                     return
                 if parsed.path == "/api/users":
-                    self._send(200, "application/json", json.dumps(asyncio.run(server.dashboard_service.users())))
+                    self._send(200, "application/json", json.dumps(self._await(server.dashboard_service.users())))
                     return
                 if parsed.path == "/api/assistants":
-                    self._send(200, "application/json", json.dumps(asyncio.run(server.dashboard_service.assistants())))
+                    self._send(200, "application/json", json.dumps(self._await(server.dashboard_service.assistants())))
                     return
                 if parsed.path == "/api/groups":
-                    self._send(200, "application/json", json.dumps(asyncio.run(server.dashboard_service.groups())))
+                    self._send(200, "application/json", json.dumps(self._await(server.dashboard_service.groups())))
                     return
                 if parsed.path == "/api/schedules":
                     self._send(200, "application/json", json.dumps({"schedules": server.dashboard_service.schedule_list()}))
                     return
                 if parsed.path == "/api/permissions":
-                    users = asyncio.run(server.dashboard_service.users())
+                    users = self._await(server.dashboard_service.users())
                     self._send(200, "application/json", json.dumps({"users": [{"user_id": u.get("user_id"), "approved": bool(u.get("approved")), "role": u.get("role", "user")} for u in users]}))
                     return
                 if parsed.path == "/api/actions":
-                    self._send(200, "application/json", json.dumps(asyncio.run(server.dashboard_service.actions())))
+                    self._send(200, "application/json", json.dumps(self._await(server.dashboard_service.actions())))
                     return
                 if parsed.path == "/api/tasks":
                     user_id = int(query["user_id"][0]) if query.get("user_id") else server.dashboard_service.default_user_id
-                    self._send(200, "application/json", json.dumps(asyncio.run(server.dashboard_service.tasks(user_id))))
+                    self._send(200, "application/json", json.dumps(self._await(server.dashboard_service.tasks(user_id))))
                     return
                 if parsed.path == "/api/departments":
-                    self._send(200, "application/json", json.dumps(asyncio.run(server.dashboard_service.departments())))
+                    self._send(200, "application/json", json.dumps(self._await(server.dashboard_service.departments())))
                     return
                 if parsed.path == "/api/projects":
                     user_id = int(query["user_id"][0]) if query.get("user_id") else server.dashboard_service.default_user_id
                     if user_id is None:
                         self._send(400, "application/json", '{"error":"user_id is required"}')
                     else:
-                        self._send(200, "application/json", json.dumps(asyncio.run(server.dashboard_service.projects(user_id))))
+                        self._send(200, "application/json", json.dumps(self._await(server.dashboard_service.projects(user_id))))
                     return
                 if parsed.path.startswith("/api/projects/") and parsed.path.endswith("/plan"):
                     project_id = parsed.path.split("/")[3]
@@ -126,7 +137,7 @@ class DashboardServer(ThreadingHTTPServer):
                     if user_id is None:
                         self._send(400, "application/json", '{"error":"user_id is required"}')
                     else:
-                        self._send(200, "application/json", json.dumps(asyncio.run(server.dashboard_service.project_plan(user_id, project_id))))
+                        self._send(200, "application/json", json.dumps(self._await(server.dashboard_service.project_plan(user_id, project_id))))
                     return
                 if parsed.path == "/webapp":
                     token = html.escape(query.get("token", [""])[0], quote=True)
@@ -157,35 +168,35 @@ class DashboardServer(ThreadingHTTPServer):
                     data = self._json_body()
                     if parsed.path.startswith("/api/users/") and parsed.path.endswith("/approval"):
                         user_id = int(parsed.path.split("/")[3])
-                        asyncio.run(server.dashboard_service.approve_user(user_id, bool(data.get("approved"))))
+                        self._await(server.dashboard_service.approve_user(user_id, bool(data.get("approved"))))
                         self._send(200, "application/json", '{"ok":true}')
                         return
                     if parsed.path == "/api/assistants":
                         required = {"assistant_id", "name"}
                         if not required.issubset(data):
                             raise ValueError("assistant_id and name are required")
-                        asyncio.run(server.dashboard_service.save_assistant(str(data["assistant_id"]), str(data["name"]), str(data.get("instructions", "")), bool(data.get("enabled", True))))
+                        self._await(server.dashboard_service.save_assistant(str(data["assistant_id"]), str(data["name"]), str(data.get("instructions", "")), bool(data.get("enabled", True))))
                         self._send(200, "application/json", '{"ok":true}')
                         return
                     owner_id = server.dashboard_service.default_user_id
                     if owner_id is None:
                         raise ValueError("dashboard owner is not configured")
                     if parsed.path == "/api/projects":
-                        project_id = asyncio.run(server.dashboard_service.create_project(owner_id, data))
+                        project_id = self._await(server.dashboard_service.create_project(owner_id, data))
                         self._send(200, "application/json", json.dumps({"ok": True, "id": project_id}))
                         return
                     if parsed.path == "/api/tasks":
-                        task_id = asyncio.run(server.dashboard_service.create_task(owner_id, data))
+                        task_id = self._await(server.dashboard_service.create_task(owner_id, data))
                         self._send(200, "application/json", json.dumps({"ok": True, "id": task_id}))
                         return
                     if parsed.path.startswith("/api/tasks/") and parsed.path.endswith("/dependency"):
                         task_id = parsed.path.split("/")[3]
-                        asyncio.run(server.dashboard_service.add_dependency(task_id, data["predecessor_id"]))
+                        self._await(server.dashboard_service.add_dependency(task_id, data["predecessor_id"]))
                         self._send(200, "application/json", '{"ok":true}')
                         return
                     if parsed.path.startswith("/api/tasks/"):
                         task_id = parsed.path.split("/")[3]
-                        updated = asyncio.run(server.dashboard_service.update_task(owner_id, task_id, data))
+                        updated = self._await(server.dashboard_service.update_task(owner_id, task_id, data))
                         self._send(200, "application/json", json.dumps({"ok": updated}))
                         return
                     self._send(404, "application/json", '{"error":"unknown endpoint"}')

@@ -330,6 +330,9 @@ class TelegramPriorityApp:
                 self.cfg.schedule_times_list,
                 self.business_access.owner_id,
                 google_account=self.google_account,
+                # The server's threads schedule work back onto this loop, where
+                # the Motor client and Telethon clients actually live.
+                loop=asyncio.get_running_loop(),
             )
             self.dashboard_thread = threading.Thread(target=self.dashboard_server.serve_forever, name="dashboard", daemon=True)
             self.dashboard_thread.start()
