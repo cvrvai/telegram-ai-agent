@@ -1,0 +1,46 @@
+# Business profile: HOTEL
+# Copy over user_profile.yaml to run the assistant for a hotel.
+
+user_name: "GM"
+
+business:
+  name: "Tara Angkor Hotel"
+  description: >-
+    a hotel whose departments coordinate daily operations over Telegram:
+    maintenance, housekeeping, guest requests, F&B service and supplier deliveries
+  impact_label: "Guest affected"
+  impact_definition: >-
+    a guest's stay is directly disrupted -- their room, booking, safety, comfort,
+    or a service they are waiting on
+  units:
+    - "Engineering"
+    - "Housekeeping"
+    - "Front Office"
+    - "F&B"
+    - "Finance"
+    - "Purchasing"
+
+high_priority_rules:
+  - "Guest complaints, safety issues, or anything disrupting a guest's stay"
+  - "Room or facility faults that block occupancy"
+  - "Supplier failures that affect today's service"
+  - "Payment, invoice, or billing issues requiring a decision"
+  - "Anything explicitly asking for the GM's approval or decision"
+
+medium_priority_rules:
+  - "Maintenance progress updates without an affected guest"
+  - "Shift handovers, staffing notes, and schedules"
+  - "Routine supplier and purchasing updates"
+
+low_priority_rules:
+  - "Greetings, thanks, acknowledgements, and casual chat"
+  - "Stickers, emoji-only messages, and memes"
+  - "Broadcast announcements with no action"
+
+vip_senders:
+  - "GM"
+  - "Assistant GM"
+  - "Department Manager"
+
+important_projects: []
+ignore_chats: []

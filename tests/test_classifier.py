@@ -19,12 +19,12 @@ from rich.panel import Panel
 from rich.table import Table
 
 from config import config
-from models import IncomingMessage
-from database import Database
-from prefilter import evaluate_prefilter
-from classifier import AIClassifier
-from notifier import Notifier
-from digest import DigestEngine
+from app.core.models import IncomingMessage
+from app.storage.sqlite_messages import Database
+from app.priority.prefilter import evaluate_prefilter
+from app.priority.classifier import AIClassifier
+from app.telegram.notifier import Notifier
+from app.priority.digest import DigestEngine
 
 console = Console(force_terminal=True, legacy_windows=False)
 
@@ -198,3 +198,5 @@ async def run_tests():
 
 if __name__ == "__main__":
     asyncio.run(run_tests())
+
+

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -60,3 +60,5 @@ class DigestScheduler:
         if self.scheduler.running:
             self.scheduler.shutdown(wait=False)
             logger.info("Digest scheduler stopped.")
+
+

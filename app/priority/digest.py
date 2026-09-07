@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import html
 from datetime import datetime
-from typing import List, Tuple
-from database import Database
-from models import MessageRecord, DigestStats
+from typing import List, Optional, Tuple
+from app.storage.sqlite_messages import Database
+from app.core.models import MessageRecord, DigestStats
 
 
 class DigestEngine:
@@ -15,12 +15,12 @@ class DigestEngine:
     def __init__(self, db: Database):
         self.db = db
 
-    async def generate_digest(self) -> Tuple[Optional[str], DigestStats]:
+    async def generate_digest(self, allowed_chat_ids: Optional[set[int]] = None) -> Tuple[Optional[str], DigestStats]:
         """
         Gathers all pending messages, formats the 3-tier digest,
         marks messages as digested, and saves history.
         """
-        records = await self.db.get_pending_digest_messages()
+        records = await self.db.get_pending_digest_messages(allowed_chat_ids=allowed_chat_ids)
         if not records:
             return None, DigestStats()
 
@@ -121,4 +121,5 @@ class DigestEngine:
         lines.append("<i>(greetings, memes, stickers, reactions, casual chat)</i>")
 
         return "\n".join(lines)
+
 

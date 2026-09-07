@@ -6,7 +6,7 @@ import logging
 import httpx
 from typing import Optional
 from config import AppConfig, config
-from models import IncomingMessage, PriorityClassification
+from app.core.models import IncomingMessage, PriorityClassification
 
 logger = logging.getLogger("notifier")
 
@@ -125,3 +125,5 @@ class Notifier:
             .replace("<", "&lt;")
             .replace(">", "&gt;")
         )
+
+

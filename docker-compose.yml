@@ -1,0 +1,38 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      STORAGE_BACKEND: mongo
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DATABASE: telegram_business
+      TELEGRAM_SESSION_NAME: /app/data/telegram_ai_session
+      TELEGRAM_BOT_SESSION_NAME: /app/data/bot_listener_session
+      DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_PORT: 3141
+    depends_on:
+      mongo:
+        condition: service_healthy
+    volumes:
+      - ./runtime:/app/data
+    ports:
+      # Loopback only. On a server the dashboard is reached through the
+      # Caddy reverse proxy (docker-compose.prod.yml), never directly;
+      # locally this is still http://localhost:3141.
+      - "127.0.0.1:3141:3141"
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mongo_data:

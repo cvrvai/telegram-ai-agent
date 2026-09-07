@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import List, Optional
 import yaml
@@ -14,10 +13,32 @@ from pydantic_settings import BaseSettings
 load_dotenv()
 
 
+class BusinessProfile(BaseSettings):
+    """What business this assistant serves.
+
+    Everything domain-specific lives here rather than in code, so one codebase
+    can run a hotel, a farm, or anything else. `impact_definition` in
+    particular replaces what used to be a hardcoded "is a guest mentioned?"
+    keyword check: the model decides using this description instead.
+    """
+
+    name: str = "the business"
+    description: str = "a business whose team coordinates daily operations over chat"
+    # The single "does this hurt what the business exists to serve?" dimension.
+    impact_label: str = "Critical impact"
+    impact_definition: str = (
+        "the people or assets the business exists to serve are directly affected "
+        "(for a hotel: a guest's stay; for a farm: crops, livestock, or a delivery commitment)"
+    )
+    units: List[str] = Field(default_factory=list, description="Departments/teams/areas, e.g. Engineering, Housekeeping or Irrigation, Harvest")
+    timezone: str = Field(default="Asia/Phnom_Penh", description="IANA zone used to resolve 'today', 'tomorrow', and meeting times.")
+
+
 class UserProfile(BaseSettings):
     """User profile and prioritization rules."""
 
     user_name: str = "User"
+    business: BusinessProfile = Field(default_factory=BusinessProfile)
     high_priority_rules: List[str] = Field(default_factory=lambda: [
         "Deadlines, urgent requests, payment/invoice blockers",
         "Direct mentions or questions requiring user approval/reply",
@@ -55,28 +76,51 @@ class AppConfig(BaseSettings):
     telegram_api_hash: Optional[str] = Field(default=None, alias="TELEGRAM_API_HASH")
     telegram_phone: Optional[str] = Field(default=None, alias="TELEGRAM_PHONE")
     telegram_session_name: str = Field(default="telegram_ai_session", alias="TELEGRAM_SESSION_NAME")
+    telegram_bot_session_name: str = Field(default="bot_listener_session", alias="TELEGRAM_BOT_SESSION_NAME")
 
     # Telegram Notification Bot
     telegram_bot_token: Optional[str] = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     notification_chat_id: Optional[int] = Field(default=None, alias="NOTIFICATION_CHAT_ID")
 
     # AI Configuration
-    ai_provider: str = Field(default="gemini", alias="AI_PROVIDER")  # "gemini", "openai", "openrouter", or "ollama"
-    gemini_api_key: Optional[str] = Field(default=None, alias="GEMINI_API_KEY")
-    gemini_model: str = Field(default="gemini-3.5-flash-lite", alias="GEMINI_MODEL")
+    ai_provider: str = Field(default="ollama", alias="AI_PROVIDER")
 
-    @property
-    def effective_gemini_model(self) -> str:
-        return os.getenv("GEMINI_TEXT_MODEL") or self.gemini_model or "gemini-3.5-flash-lite"
+    # Business assistant access and budget. The budget is a guardrail, not a
+    # provider subscription or a promise of a fixed message quota.
+    owner_user_id: Optional[int] = Field(default=None, alias="OWNER_USER_ID")
+    approved_user_ids: str = Field(default="", alias="APPROVED_USER_IDS")
+    approved_group_ids: str = Field(default="", alias="APPROVED_GROUP_IDS")
+    ai_monthly_budget_usd: float = Field(default=20.0, alias="AI_MONTHLY_BUDGET_USD")
+    ai_input_price_per_million: float = Field(default=0.30, alias="AI_INPUT_PRICE_PER_MILLION")
+    ai_output_price_per_million: float = Field(default=2.50, alias="AI_OUTPUT_PRICE_PER_MILLION")
+    dashboard_token: Optional[str] = Field(default=None, alias="DASHBOARD_TOKEN")
+    dashboard_host: str = Field(default="127.0.0.1", alias="DASHBOARD_HOST")
+    dashboard_port: int = Field(default=3141, alias="DASHBOARD_PORT")
+    dashboard_public_url: Optional[str] = Field(default=None, alias="DASHBOARD_PUBLIC_URL")
+    assistant_ids: str = Field(default="business", alias="ASSISTANT_IDS")
+    integration_secret: Optional[str] = Field(default=None, alias="INTEGRATION_SECRET")
+    email_webhook_url: Optional[str] = Field(default=None, alias="EMAIL_WEBHOOK_URL")
+    calendar_webhook_url: Optional[str] = Field(default=None, alias="CALENDAR_WEBHOOK_URL")
+    crm_webhook_url: Optional[str] = Field(default=None, alias="CRM_WEBHOOK_URL")
+    task_webhook_url: Optional[str] = Field(default=None, alias="TASK_WEBHOOK_URL")
 
-    openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
-    openai_base_url: Optional[str] = Field(default=None, alias="OPENAI_BASE_URL")
+    # Google Calendar + Gmail (owner-only). The OAuth redirect lands on the
+    # dashboard server, so this also requires dashboard_public_url/dashboard_token.
+    google_client_id: Optional[str] = Field(default=None, alias="GOOGLE_CLIENT_ID")
+    google_client_secret: Optional[str] = Field(default=None, alias="GOOGLE_CLIENT_SECRET")
+    google_oauth_redirect_uri: Optional[str] = Field(default=None, alias="GOOGLE_OAUTH_REDIRECT_URI")
 
     # Ollama Configuration
     ollama_base_url: str = Field(default="http://localhost:11434/v1", alias="OLLAMA_BASE_URL")
     ollama_model: str = Field(default="llama3.1", alias="OLLAMA_MODEL")
     ollama_api_key: str = Field(default="ollama", alias="OLLAMA_API_KEY")
+
+    # Production provider. Ollama stays the default so a demo box needs no
+    # paid key; set AI_PROVIDER=anthropic to switch without touching code.
+    anthropic_api_key: Optional[str] = Field(default=None, alias="ANTHROPIC_API_KEY")
+    anthropic_model: str = Field(default="claude-opus-5", alias="ANTHROPIC_MODEL")
+    anthropic_effort: Optional[str] = Field(default=None, alias="ANTHROPIC_EFFORT")
+    ai_request_timeout_seconds: float = Field(default=120.0, alias="AI_REQUEST_TIMEOUT_SECONDS")
 
     # Priority & Alerts
     urgent_score_threshold: int = Field(default=90, alias="URGENT_SCORE_THRESHOLD")
@@ -87,7 +131,12 @@ class AppConfig(BaseSettings):
     digest_schedule_times: str = Field(default="08:00,13:00,19:00,22:00", alias="DIGEST_SCHEDULE_TIMES")
 
     # Database
+    # Runtime storage is MongoDB-only. DATABASE_PATH is retained solely for
+    # the one-time SQLite migration utility and local compatibility tests.
     database_path: str = Field(default="telegram_bot.db", alias="DATABASE_PATH")
+    storage_backend: str = Field(default="mongo", alias="STORAGE_BACKEND")
+    mongo_uri: Optional[str] = Field(default=None, alias="MONGO_URI")
+    mongo_database: str = Field(default="telegram_business", alias="MONGO_DATABASE")
 
     # User profile rules
     profile: UserProfile = Field(default_factory=UserProfile.load_from_yaml)
@@ -100,9 +149,36 @@ class AppConfig(BaseSettings):
     def schedule_times_list(self) -> List[str]:
         return [t.strip() for t in self.digest_schedule_times.split(",") if t.strip()]
 
+    @staticmethod
+    def _parse_ids(value: str) -> List[int]:
+        ids: List[int] = []
+        for item in value.split(","):
+            try:
+                if item.strip():
+                    ids.append(int(item.strip()))
+            except ValueError:
+                continue
+        return ids
+
+    @property
+    def approved_user_id_list(self) -> List[int]:
+        return self._parse_ids(self.approved_user_ids)
+
+    @property
+    def approved_group_id_list(self) -> List[int]:
+        return self._parse_ids(self.approved_group_ids)
+
+    @property
+    def assistant_id_list(self) -> List[str]:
+        return [item.strip() for item in self.assistant_ids.split(",") if item.strip()]
+
     class Config:
         env_file = ".env"
         extra = "ignore"
+        # A present-but-blank value (e.g. `OWNER_USER_ID=`, exactly what
+        # .env.example documents for every optional field) must fall back to
+        # the field default instead of failing int/optional validation.
+        env_ignore_empty = True
 
 
 # Global settings instance

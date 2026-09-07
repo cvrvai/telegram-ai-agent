@@ -1,4 +1,4 @@
-"""AI Priority Classifier using Gemini or OpenAI with Structured Outputs."""
+"""AI Priority Classifier using Ollama's OpenAI-compatible API."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Optional
 from config import AppConfig, config
-from models import IncomingMessage, PriorityClassification
+from app.core.models import IncomingMessage, PriorityClassification
 
 logger = logging.getLogger("classifier")
 
@@ -16,41 +16,18 @@ class AIClassifier:
 
     def __init__(self, cfg: Optional[AppConfig] = None):
         self.cfg = cfg or config
-        self._gemini_client = None
-        self._openai_client = None
         self._ollama_client = None
         self._init_clients()
 
     def _init_clients(self) -> None:
-        # 1. Ollama Client (OpenAI-compatible)
-        if self.cfg.ai_provider.lower() == "ollama" or self.cfg.ollama_base_url:
-            try:
-                from openai import OpenAI
-                self._ollama_client = OpenAI(
-                    api_key=self.cfg.ollama_api_key or "ollama",
-                    base_url=self.cfg.ollama_base_url,
-                )
-            except Exception as e:
-                logger.warning(f"Could not initialize Ollama client: {e}")
-
-        # 2. Gemini Client
-        if self.cfg.gemini_api_key:
-            try:
-                from google import genai
-                self._gemini_client = genai.Client(api_key=self.cfg.gemini_api_key)
-            except Exception as e:
-                logger.warning(f"Could not initialize Google GenAI client: {e}")
-
-        # 3. OpenAI Client
-        if self.cfg.openai_api_key:
-            try:
-                from openai import OpenAI
-                self._openai_client = OpenAI(
-                    api_key=self.cfg.openai_api_key,
-                    base_url=self.cfg.openai_base_url,
-                )
-            except Exception as e:
-                logger.warning(f"Could not initialize OpenAI client: {e}")
+        try:
+            from openai import OpenAI
+            self._ollama_client = OpenAI(
+                api_key=self.cfg.ollama_api_key or "ollama",
+                base_url=self.cfg.ollama_base_url,
+            )
+        except Exception as e:
+            logger.warning(f"Could not initialize Ollama client: {e}")
 
     def _build_system_prompt(self) -> str:
         """Constructs the system prompt injected with the user's priority profile."""
@@ -60,9 +37,13 @@ class AIClassifier:
         med_rules = "\n".join(f"- {r}" for r in profile.medium_priority_rules)
         low_rules = "\n".join(f"- {r}" for r in profile.low_priority_rules)
         vips = ", ".join(profile.vip_senders) if profile.vip_senders else "None"
+        business = profile.business
+        units = ", ".join(business.units) if business.units else "Not specified"
         projects = ", ".join(profile.important_projects) if profile.important_projects else "None"
 
         return f"""You are an elite AI Executive Assistant and Notification Gatekeeper for {profile.user_name}.
+You support {business.name}: {business.description}
+Teams/departments/areas: {units}
 Your job is to analyze incoming Telegram messages and classify their priority, score, actionable items, and summary with surgical precision.
 
 === USER PRIORITY RULES ===
@@ -78,30 +59,35 @@ LOW PRIORITY (P3 - Score 0-39):
 KEY PROJECTS: {projects}
 VIP SENDER LIST: {vips}
 
-=== PRIORITY DEFINITIONS ===
-* P0 (Score 90-100) - URGENT:
+=== PRIORITY DEFINITIONS (independent from message type) ===
+* P0 (Score 90-100) - CRITICAL:
   - Immediate action/reply required NOW.
   - Critical emergencies, server downtime, financial/supplier blockers, urgent payment confirmation.
-  - Direct request from professor/boss with immediate deadline.
+  - Direct request from a VIP sender or decision-maker with an immediate deadline.
 
-* P1 (Score 70-89) - IMPORTANT:
-  - Important tasks, assignment deadline changes, project decisions, code reviews, wireframe approvals.
+* P1 (Score 70-89) - HIGH:
+  - Important tasks, deadline changes, decisions, reviews, and approvals.
   - Direct questions addressed to the user requiring response within hours.
 
-* P2 (Score 40-69) - USEFUL:
-  - Informational updates, progress reports, meeting minutes, technical announcements.
-  - No immediate user action required.
+* P2 (Score 40-69) - NORMAL:
+  - Planned work, useful updates, decisions, and routine questions.
 
-* P3 (Score 0-39) - NOISE:
-  - Banter, jokes, sports discussions, memes, casual conversation, repeated messages, greetings.
+* P3 (Score 0-39) - LOW:
+  - Low-impact work or chatter. Chatter is not a task unless explicitly converted.
+
+=== MESSAGE / WORK TYPE (independent from priority) ===
+Choose exactly one: task, update, question, decision, waiting, blocker, chatter.
+An update may be P0 and a task may be P3. Do not infer type from priority.
 
 === CONTEXT EVALUATION INSTRUCTION ===
 Always evaluate context!
-- Example A: 'Meeting moved to 3 PM' in University or CloudKH group -> P1 (Score 80-90).
-- Example B: 'Barcelona match moved to 3 PM' in football/friends group -> P3 (Score 20).
+- The SAME words mean different things in different chats: a time change in a work/operations
+  group is high priority; the same sentence in a social group is noise. Judge by the chat and
+  the priority rules above, never by keywords alone.
 - Extract clear, actionable instructions in the `action` field if `needs_action` is true.
 - If a deadline or time is mentioned, extract it into the `deadline` field.
 - Provide a crisp 1-sentence `summary` focusing on what the user needs to know.
+- Set `critical_impact` true ONLY when: {business.impact_definition}
 """
 
     def _build_user_message(self, msg: IncomingMessage) -> str:
@@ -122,23 +108,9 @@ MESSAGE CONTENT:
 
     async def classify(self, msg: IncomingMessage) -> PriorityClassification:
         """Classifies an incoming message using the configured AI provider."""
-        provider = self.cfg.ai_provider.lower()
-
-        if provider == "ollama" and self._ollama_client:
+        if self._ollama_client:
             return await self._classify_ollama(msg)
-        elif provider == "gemini" and self._gemini_client:
-            return await self._classify_gemini(msg)
-        elif provider in ("openai", "openrouter") and self._openai_client:
-            return await self._classify_openai(msg)
-        elif self._ollama_client:
-            return await self._classify_ollama(msg)
-        elif self._gemini_client:
-            return await self._classify_gemini(msg)
-        elif self._openai_client:
-            return await self._classify_openai(msg)
-        else:
-            # Fallback heuristic if no AI backend is active
-            return self._fallback_classification(msg)
+        return self._fallback_classification(msg, reason="Ollama is unavailable")
 
     async def _classify_ollama(self, msg: IncomingMessage) -> PriorityClassification:
         """Classify using Ollama / OpenAI-compatible endpoint using direct HTTP requests."""
@@ -155,7 +127,10 @@ MESSAGE CONTENT:
             + '  "action": "string" or null,\n'
             + '  "deadline": "string" or null,\n'
             + '  "category": "string",\n'
-            + '  "summary": "string"\n'
+             + '  "summary": "string",\n'
+             + '  "message_type": "task" | "update" | "question" | "decision" | "waiting" | "blocker" | "chatter",\n'
+             + '  "critical_impact": boolean,\n'
+             + '  "ai_confidence": number (0.0 to 1.0)\n'
             + "}"
         )
         user_prompt = self._build_user_message(msg)
@@ -179,7 +154,7 @@ MESSAGE CONTENT:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=self.cfg.ai_request_timeout_seconds) as client:
                 res = await client.post(url, json=payload, headers=headers)
                 res.raise_for_status()
                 data = res.json()
@@ -204,88 +179,45 @@ MESSAGE CONTENT:
         clean = clean.strip()
         return json.loads(clean)
 
-
-    async def _classify_gemini(self, msg: IncomingMessage) -> PriorityClassification:
-        """Classify using Google Gemini Structured Outputs."""
-        system_prompt = self._build_system_prompt()
-        user_prompt = self._build_user_message(msg)
-
-        try:
-            from google.genai import types
-
-            response = self._gemini_client.models.generate_content(
-                model=self.cfg.effective_gemini_model,
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    response_mime_type="application/json",
-                    response_schema=PriorityClassification,
-                    temperature=0.1,
-                ),
-            )
-            raw_json = response.text
-            data = json.loads(raw_json)
-            return PriorityClassification(**data)
-        except Exception as e:
-            logger.error(f"Gemini classification failed: {e}", exc_info=True)
-            return self._fallback_classification(msg, reason=f"Gemini API error: {e}")
-
-
-    async def _classify_openai(self, msg: IncomingMessage) -> PriorityClassification:
-        """Classify using OpenAI Structured Outputs (beta.chat.completions.parse)."""
-        system_prompt = self._build_system_prompt()
-        user_prompt = self._build_user_message(msg)
-
-        try:
-            completion = self._openai_client.beta.chat.completions.parse(
-                model=self.cfg.openai_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format=PriorityClassification,
-                temperature=0.1,
-            )
-            parsed = completion.choices[0].message.parsed
-            if parsed:
-                return parsed
-            # If parsed is None, parse raw content
-            raw = completion.choices[0].message.content or "{}"
-            return PriorityClassification(**json.loads(raw))
-        except Exception as e:
-            logger.error(f"OpenAI classification failed: {e}", exc_info=True)
-            return self._fallback_classification(msg, reason=f"OpenAI API error: {e}")
-
     def _fallback_classification(self, msg: IncomingMessage, reason: Optional[str] = None) -> PriorityClassification:
         """Heuristic fallback classification when AI API is unavailable."""
         text = (msg.text or "").lower()
         chat = (msg.chat_title or "").lower()
 
         is_urgent = any(w in text for w in ["deadline", "urgent", "asap", "emergency", "payment", "due today", "cancel"])
-        is_cloudkh = "cloudkh" in text or "cloudkh" in chat
-        is_uni = "university" in chat or "assignment" in text or "exam" in text
+        is_blocker = any(w in text for w in ["blocking", "blocked", "outage", "production down", "service disconnection"])
+        is_question = "?" in text or any(w in text for w in ["can you", "could you", "please confirm"])
+        is_task = any(w in text for w in ["please", "need to", "fix", "send", "prepare", "review", "approve", "finish"])
+        # No offline keyword table can know this business; the only domain
+        # signal available without the model is what the profile declared.
+        projects = [name.lower() for name in self.cfg.profile.important_projects if name]
+        is_key_project = any(name in text or name in chat for name in projects)
 
-        if is_urgent or (is_cloudkh and "approve" in text):
+        if is_urgent or is_blocker or (is_key_project and "approve" in text):
             return PriorityClassification(
-                priority="P1",
+                priority="P0" if is_blocker or "emergency" in text or "production down" in text else "P1",
                 score=85,
                 reason=reason or "Keyword heuristic: Urgent deadline/approval detected.",
                 needs_action=True,
                 action="Review message and respond",
                 deadline=None,
-                category="project" if is_cloudkh else "general",
+                category="project" if is_key_project else "general",
                 summary=f"[{msg.chat_title}] {msg.text[:100]}",
+                message_type="blocker" if is_blocker else ("question" if is_question and not is_task else "task"),
+                ai_confidence=0.35,
             )
-        elif is_uni or is_cloudkh:
+        elif is_key_project:
             return PriorityClassification(
                 priority="P2",
                 score=60,
-                reason=reason or "Keyword heuristic: Project/University update.",
+                reason=reason or "Keyword heuristic: key project update.",
                 needs_action=False,
                 action=None,
                 deadline=None,
-                category="project" if is_cloudkh else "university",
+                category="project",
                 summary=f"[{msg.chat_title}] {msg.text[:100]}",
+                message_type="update",
+                ai_confidence=0.30,
             )
         else:
             return PriorityClassification(
@@ -297,6 +229,8 @@ MESSAGE CONTENT:
                 deadline=None,
                 category="general",
                 summary=f"[{msg.chat_title}] {msg.text[:80]}",
+                message_type="task" if is_task and not is_question else ("question" if is_question else "chatter"),
+                ai_confidence=0.20,
             )
 
     async def answer_user_query(self, query: str, context_messages: list) -> str:
@@ -322,23 +256,7 @@ Answer the user's question accurately, concisely, and helpfully based on the con
 If the information is not in the context, clearly say so.
 Format with clean bullet points and emojis if helpful."""
 
-        # 1. Use Gemini if configured
-        if self.cfg.ai_provider.lower() == "gemini" and self._gemini_client:
-            try:
-                from google.genai import types
-
-                full_prompt = f"{system_prompt}\n\nUSER QUESTION: {query}"
-                response = self._gemini_client.models.generate_content(
-                    model=self.cfg.effective_gemini_model,
-                    contents=full_prompt,
-                )
-                return response.text or "No response from Gemini."
-            except Exception as e:
-                logger.error(f"Error querying Gemini: {e}")
-                return f"⚠️ Gemini Error: {e}\n\nRecent messages:\n" + "\n".join(msgs_summary[:5])
-
-
-        # 2. Use Ollama / OpenAI-compatible endpoint
+        # Use Ollama's OpenAI-compatible endpoint.
         import httpx
         base_url = (self.cfg.ollama_base_url or "http://localhost:11434/v1").rstrip("/")
         url = f"{base_url}/chat/completions"
