@@ -219,6 +219,49 @@ credentials.
 
 ---
 
+## Switching from Ollama to Claude
+
+The demo runs on Ollama so it costs nothing to show. Production runs on Claude.
+Both are built into the same image -- switching is three lines of `.env` and a
+restart, with no code change and no rebuild.
+
+```ini
+AI_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-opus-5
+```
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+docker compose logs bot | grep "Business AI provider"
+```
+
+That log line reports the provider and model actually in use -- check it rather
+than assuming the switch took.
+
+**Cost control.** Claude bills per token, so the budget guardrail stops mattering
+in theory and starts mattering in practice:
+
+```ini
+AI_MONTHLY_BUDGET_USD=20
+```
+
+Pricing for known models is compiled in ($5.00 / $25.00 per million tokens for
+`claude-opus-5`), so spend is tracked accurately without you configuring rates.
+If you set `ANTHROPIC_MODEL` to something this build does not recognise, it
+refuses to start rather than billing it as free -- set
+`AI_INPUT_PRICE_PER_MILLION` and `AI_OUTPUT_PRICE_PER_MILLION` for that case.
+
+`ANTHROPIC_EFFORT` (`low`, `medium`, `high`, `xhigh`, `max`) trades depth against
+cost and latency. Leave it blank for the API default; `low` or `medium` is worth
+measuring if replies feel slow, since most assistant turns are routine.
+
+**Going back to the demo** is the same switch in reverse -- set
+`AI_PROVIDER=ollama` and restart. Nothing else changes, so you can keep a UAT
+box on Ollama and production on Claude from one branch.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause |

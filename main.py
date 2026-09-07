@@ -106,15 +106,38 @@ class TelegramPriorityApp:
             self.cfg.google_client_secret,
             self.cfg.google_oauth_redirect_uri,
         )
-        if self.cfg.ai_provider.lower() != "ollama":
-            raise RuntimeError("Only Ollama is supported. Set AI_PROVIDER=ollama and configure OLLAMA_BASE_URL, OLLAMA_MODEL, and OLLAMA_API_KEY.")
-        business_provider = OpenAICompatibleProvider(
-            self.cfg.ollama_base_url,
-            self.cfg.ollama_api_key,
-            self.cfg.ollama_model,
-            timeout_seconds=self.cfg.ai_request_timeout_seconds,
-        )
-        input_rate = output_rate = 0.0
+        provider_name = self.cfg.ai_provider.lower()
+        if provider_name == "ollama":
+            business_provider = OpenAICompatibleProvider(
+                self.cfg.ollama_base_url,
+                self.cfg.ollama_api_key,
+                self.cfg.ollama_model,
+                timeout_seconds=self.cfg.ai_request_timeout_seconds,
+            )
+            input_rate = output_rate = 0.0
+            selected_model = self.cfg.ollama_model
+        elif provider_name == "anthropic":
+            from app.ai.anthropic_provider import MODEL_PRICING, AnthropicProvider
+            if not self.cfg.anthropic_api_key:
+                raise RuntimeError("AI_PROVIDER=anthropic requires ANTHROPIC_API_KEY.")
+            # List pricing for a known model; the operator's rates only for one
+            # this build has never heard of, so the budget is never silently zero.
+            priced = self.cfg.anthropic_model in MODEL_PRICING
+            business_provider = AnthropicProvider(
+                self.cfg.anthropic_api_key,
+                self.cfg.anthropic_model,
+                input_price_per_million=None if priced else self.cfg.ai_input_price_per_million,
+                output_price_per_million=None if priced else self.cfg.ai_output_price_per_million,
+                timeout_seconds=self.cfg.ai_request_timeout_seconds,
+                effort=self.cfg.anthropic_effort,
+            )
+            input_rate = business_provider.input_price_per_million
+            output_rate = business_provider.output_price_per_million
+            selected_model = self.cfg.anthropic_model
+        else:
+            raise RuntimeError(
+                f"Unknown AI_PROVIDER {self.cfg.ai_provider!r}. Use 'ollama' or 'anthropic'."
+            )
         self.business_provider = business_provider
         self.business_assistant = AssistantService(
             self.business_repository,
@@ -139,7 +162,6 @@ class TelegramPriorityApp:
                     input_price_per_million=input_rate,
                     output_price_per_million=output_rate,
                 )
-        selected_model = self.cfg.ollama_model
         logger.info("Business AI provider: %s | model: %s", self.cfg.ai_provider, selected_model)
         logger.info(
             "Business access owner: %s | approved users: %d | approved groups: %d",

@@ -114,6 +114,12 @@ class AppConfig(BaseSettings):
     ollama_base_url: str = Field(default="http://localhost:11434/v1", alias="OLLAMA_BASE_URL")
     ollama_model: str = Field(default="llama3.1", alias="OLLAMA_MODEL")
     ollama_api_key: str = Field(default="ollama", alias="OLLAMA_API_KEY")
+
+    # Production provider. Ollama stays the default so a demo box needs no
+    # paid key; set AI_PROVIDER=anthropic to switch without touching code.
+    anthropic_api_key: Optional[str] = Field(default=None, alias="ANTHROPIC_API_KEY")
+    anthropic_model: str = Field(default="claude-opus-5", alias="ANTHROPIC_MODEL")
+    anthropic_effort: Optional[str] = Field(default=None, alias="ANTHROPIC_EFFORT")
     ai_request_timeout_seconds: float = Field(default=120.0, alias="AI_REQUEST_TIMEOUT_SECONDS")
 
     # Priority & Alerts
