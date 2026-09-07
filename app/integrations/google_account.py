@@ -30,16 +30,23 @@ class GoogleAccount:
                 "Google integration is not configured. Set GOOGLE_CLIENT_ID, "
                 "GOOGLE_CLIENT_SECRET and GOOGLE_OAUTH_REDIRECT_URI."
             )
-        state = await self.repository.create_google_oauth_state(user_id)
-        return google_auth.build_auth_url(self.client_id, self.client_secret, self.redirect_uri, state)
+        # The verifier is minted with the URL and must survive until the
+        # callback, so it is stored with the one-time state record.
+        placeholder = await self.repository.create_google_oauth_state(user_id)
+        url, code_verifier = google_auth.build_auth_url(self.client_id, self.client_secret, self.redirect_uri, placeholder)
+        await self.repository.attach_google_oauth_verifier(placeholder, code_verifier)
+        return url
 
     async def handle_callback(self, code: str, state: str) -> int:
         if not code:
             raise ValueError("Google did not return an authorization code.")
-        user_id = await self.repository.consume_google_oauth_state(state)
-        if user_id is None:
+        record = await self.repository.consume_google_oauth_state(state)
+        if record is None:
             raise ValueError("This connection link expired or was already used. Ask for a new /connectgoogle link.")
-        credentials = google_auth.exchange_code(self.client_id, self.client_secret, self.redirect_uri, code)
+        user_id = record["user_id"]
+        credentials = google_auth.exchange_code(
+            self.client_id, self.client_secret, self.redirect_uri, code, record.get("code_verifier")
+        )
         await self.repository.save_google_token(user_id, google_auth.credentials_to_record(credentials), ",".join(credentials.scopes or []))
         return user_id
 

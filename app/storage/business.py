@@ -195,7 +195,8 @@ CREATE TABLE IF NOT EXISTS assistant_google_oauth_states (
     state TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
     created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL
+    expires_at TEXT NOT NULL,
+    code_verifier TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_assistant_google_oauth_states_expiry ON assistant_google_oauth_states(expires_at);
 """
@@ -218,6 +219,7 @@ async def init_business_schema(db_path: str) -> None:
             "ALTER TABLE assistant_tasks ADD COLUMN assignee_id INTEGER",
             "ALTER TABLE assistant_tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'",
             "ALTER TABLE assistant_tasks ADD COLUMN duration_days INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE assistant_google_oauth_states ADD COLUMN code_verifier TEXT",
         ):
             try:
                 await db.execute(statement)
@@ -567,7 +569,12 @@ class BusinessRepository:
             await db.commit()
         return state
 
-    async def consume_google_oauth_state(self, state: str) -> Optional[int]:
+    async def attach_google_oauth_verifier(self, state: str, code_verifier: Optional[str]) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("UPDATE assistant_google_oauth_states SET code_verifier=? WHERE state=?", (code_verifier, state))
+            await db.commit()
+
+    async def consume_google_oauth_state(self, state: str) -> Optional[Dict[str, Any]]:
         now = _now()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -579,7 +586,7 @@ class BusinessRepository:
             await db.commit()
             if row["expires_at"] < now:
                 return None
-            return int(row["user_id"])
+            return {"user_id": int(row["user_id"]), "code_verifier": row["code_verifier"]}
 
     async def record_usage(self, period: str, assistant_id: str, feature: str, input_tokens: int, output_tokens: int, cost_usd: float, user_id: Optional[int] = None, model: str = "") -> None:
         async with aiosqlite.connect(self.db_path) as db:

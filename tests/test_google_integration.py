@@ -42,7 +42,7 @@ class GoogleTokenStorageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_oauth_state_is_single_use_and_scoped_to_its_owner(self) -> None:
         state = await self.repository.create_google_oauth_state(42)
-        self.assertEqual(await self.repository.consume_google_oauth_state(state), 42)
+        self.assertEqual((await self.repository.consume_google_oauth_state(state))["user_id"], 42)
         # Single-use: consuming again fails even though it was valid a moment ago.
         self.assertIsNone(await self.repository.consume_google_oauth_state(state))
         self.assertIsNone(await self.repository.consume_google_oauth_state("never-issued"))
@@ -69,9 +69,11 @@ class GoogleAuthHelperTests(unittest.TestCase):
         self.assertEqual(restored.scopes, [google_auth.CALENDAR_SCOPE])
 
     def test_build_auth_url_is_a_local_operation_and_carries_state(self) -> None:
-        url = google_auth.build_auth_url("client-id", "client-secret", "https://example.com/oauth/google/callback", "the-state")
+        url, code_verifier = google_auth.build_auth_url("client-id", "client-secret", "https://example.com/oauth/google/callback", "the-state")
         self.assertIn("state=the-state", url)
         self.assertIn("accounts.google.com", url)
+        # PKCE verifier must come back so the caller can persist it.
+        self.assertTrue(code_verifier)
 
     def test_ensure_fresh_returns_false_for_a_valid_credential(self) -> None:
         creds = Credentials(
@@ -116,10 +118,11 @@ class GoogleAccountTests(unittest.IsolatedAsyncioTestCase):
         account = GoogleAccount(self.repository, "client-id", "client-secret", "https://example.com/oauth/google/callback")
         url = await account.connect_url(42)
         self.assertIn("accounts.google.com", url)
+        self.assertIn("code_challenge=", url)  # PKCE is on
         # The state embedded in the URL is the one create_google_oauth_state
         # persisted -- pull it back out and confirm it resolves to user 42.
         state = url.split("state=")[1].split("&")[0]
-        self.assertEqual(await self.repository.consume_google_oauth_state(state), 42)
+        self.assertEqual((await self.repository.consume_google_oauth_state(state))["user_id"], 42)
 
     async def test_handle_callback_rejects_an_unknown_or_reused_state(self) -> None:
         account = GoogleAccount(self.repository, "client-id", "client-secret", "https://example.com/oauth/google/callback")
@@ -132,7 +135,7 @@ class GoogleAccountTests(unittest.IsolatedAsyncioTestCase):
         fake_credentials = Credentials(token="issued-token", refresh_token="issued-refresh", scopes=[google_auth.CALENDAR_SCOPE])
         with patch("app.integrations.google_account.google_auth.exchange_code", return_value=fake_credentials) as fake_exchange:
             user_id = await account.handle_callback("auth-code", state)
-        fake_exchange.assert_called_once_with("client-id", "client-secret", "https://example.com/oauth/google/callback", "auth-code")
+        fake_exchange.assert_called_once_with("client-id", "client-secret", "https://example.com/oauth/google/callback", "auth-code", None)
         self.assertEqual(user_id, 42)
         self.assertTrue(await account.is_connected(42))
 

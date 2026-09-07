@@ -35,7 +35,11 @@ def _flow(client_id: str, client_secret: str, redirect_uri: str) -> Flow:
     return Flow.from_client_config(client_config, scopes=SCOPES, redirect_uri=redirect_uri)
 
 
-def build_auth_url(client_id: str, client_secret: str, redirect_uri: str, state: str) -> str:
+def build_auth_url(client_id: str, client_secret: str, redirect_uri: str, state: str) -> tuple[str, Optional[str]]:
+    """Returns (url, code_verifier). The library generates a PKCE verifier here
+    and Google demands the SAME one back at token exchange, so the caller must
+    persist it with the state -- a second Flow object would generate a new one
+    and the exchange fails with "invalid_grant: Missing code verifier"."""
     flow = _flow(client_id, client_secret, redirect_uri)
     auth_url, _ = flow.authorization_url(
         access_type="offline",
@@ -43,11 +47,13 @@ def build_auth_url(client_id: str, client_secret: str, redirect_uri: str, state:
         prompt="consent",  # guarantees a refresh_token even on re-consent
         state=state,
     )
-    return auth_url
+    return auth_url, getattr(flow, "code_verifier", None)
 
 
-def exchange_code(client_id: str, client_secret: str, redirect_uri: str, code: str) -> Credentials:
+def exchange_code(client_id: str, client_secret: str, redirect_uri: str, code: str, code_verifier: Optional[str] = None) -> Credentials:
     flow = _flow(client_id, client_secret, redirect_uri)
+    if code_verifier:
+        flow.code_verifier = code_verifier
     flow.fetch_token(code=code)
     return flow.credentials
 

@@ -403,11 +403,14 @@ class MongoBusinessRepository:
         await self.google_oauth_states.insert_one({"state": state, "user_id": user_id, "created_at": _now(), "expires_at": expires})
         return state
 
-    async def consume_google_oauth_state(self, state: str) -> Optional[int]:
+    async def attach_google_oauth_verifier(self, state: str, code_verifier: Optional[str]) -> None:
+        await self.google_oauth_states.update_one({"state": state}, {"$set": {"code_verifier": code_verifier}})
+
+    async def consume_google_oauth_state(self, state: str) -> Optional[Dict[str, Any]]:
         row = await self.google_oauth_states.find_one_and_delete({"state": state})
         if not row or row["expires_at"] < _now():
             return None
-        return int(row["user_id"])
+        return {"user_id": int(row["user_id"]), "code_verifier": row.get("code_verifier")}
 
     async def record_usage(
         self,
