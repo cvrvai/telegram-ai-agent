@@ -31,6 +31,7 @@ class BusinessProfile(BaseSettings):
         "(for a hotel: a guest's stay; for a farm: crops, livestock, or a delivery commitment)"
     )
     units: List[str] = Field(default_factory=list, description="Departments/teams/areas, e.g. Engineering, Housekeeping or Irrigation, Harvest")
+    timezone: str = Field(default="Asia/Phnom_Penh", description="IANA zone used to resolve 'today', 'tomorrow', and meeting times.")
 
 
 class UserProfile(BaseSettings):

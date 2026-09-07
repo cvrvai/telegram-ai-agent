@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import httpx
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
@@ -41,8 +43,23 @@ class OpenAICompatibleProvider:
         messages.append({"role": "user", "content": prompt})
         return await self._request(messages)
 
+    @staticmethod
+    def _now_line() -> str:
+        """Without this the model dates "tomorrow" from training-time memory --
+        it produced Sept 6 on Sept 7."""
+        from config import config
+        try:
+            zone = ZoneInfo(config.profile.business.timezone)
+        except Exception:
+            zone = None
+        now = datetime.now(zone) if zone else datetime.now()
+        return now.strftime("%A %d %B %Y, %H:%M %Z").strip()
+
     async def decide(self, prompt, context, tools, tool_results, history=None):
         messages = [{"role": "system", "content": (
+            f"The current date and time is {self._now_line()}. Resolve 'today', 'tomorrow', "
+            "and any other relative date from that, never from memory, and use that timezone's "
+            "offset in any ISO timestamp you produce. "
             "You are a conversational assistant with Telegram tools. Respond naturally; no unsolicited tasks or projects. "
             "Use read_telegram_chat for requests about Telegram history or summaries, including Saved Messages. "
             "Use select_telegram_chat when the user wants to choose/list/search groups or people. The application will show a native picker and request consent. "
