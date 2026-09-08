@@ -60,9 +60,32 @@ class DocumentExtractor:
             except ImportError as exc:
                 raise ContentExtractionError("PDF support requires the optional pypdf package") from exc
             try:
-                text = "\n".join(page.extract_text() or "" for page in PdfReader(str(file_path)).pages)
+                reader = PdfReader(str(file_path))
+                text = "\n".join(page.extract_text() or "" for page in reader.pages)
+                if len(text.strip()) < self.MIN_OCR_CHARS:
+                    # Attempt OCR on embedded page images for scanned PDFs
+                    ocr_parts = []
+                    try:
+                        import pytesseract
+                        from PIL import Image
+                        import io
+                        for page in reader.pages:
+                            for img in getattr(page, "images", []):
+                                try:
+                                    with Image.open(io.BytesIO(img.data)) as pil_img:
+                                        t = pytesseract.image_to_string(pil_img).strip()
+                                        if len(t) >= self.MIN_OCR_CHARS:
+                                            ocr_parts.append(t)
+                                except Exception:
+                                    pass
+                    except ImportError:
+                        pass
+                    if ocr_parts:
+                        text = "\n\n".join(ocr_parts)
             except Exception as exc:
                 raise ContentExtractionError("The PDF could not be read") from exc
+            if not text.strip():
+                text = f"PDF file: {file_path.name} (no readable text found in document)"
             return self._bounded(file_path, "pdf", text)
         if suffix in self.SUPPORTED_SPREADSHEETS:
             return self._extract_spreadsheet(file_path, suffix)
