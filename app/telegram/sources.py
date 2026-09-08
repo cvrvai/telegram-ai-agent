@@ -197,3 +197,36 @@ async def select_telegram_chat(args, context):
 async def telegram_access(args, context):
     context.telegram.authorize_actor(context.actor_id, context.chat_id, context.chat_type)
     raise InteractionRequired("selecting", {"access_view": True, "grants": await context.telegram.store.list_grants(context.actor_id)})
+
+
+class SendTelegramMessageInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    recipient: str = Field(description="Name, username, or numeric ID of the Telegram contact or chat to message (e.g. 'Dai Vai', '@DaivaiCheong', or '1001924732').")
+    message: str = Field(min_length=1, max_length=4000, description="The message text to send.")
+
+
+async def draft_telegram_message(args: SendTelegramMessageInput, context: Any):
+    if context.telegram is None:
+        raise RuntimeError("Telegram source tools are not connected.")
+    context.telegram.authorize_actor(context.actor_id, context.chat_id, context.chat_type)
+    rows = await context.telegram.directory()
+    candidates = context.telegram.matches(rows, args.recipient)
+    if not candidates:
+        target_id = args.recipient
+        target_title = args.recipient
+    else:
+        target_id = str(candidates[0]["id"])
+        target_title = candidates[0]["title"]
+
+    action_id = await context.service.draft_action(
+        context.actor_id, context.chat_id, context.chat_type,
+        "send_message", target_id, args.message, 15
+    )
+    context.session["pending_draft_action"] = {"id": action_id, "label": f"message to {target_title}"}
+    return {
+        "drafted": True,
+        "action_id": action_id,
+        "recipient": target_title,
+        "message": args.message,
+    }
+

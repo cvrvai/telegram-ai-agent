@@ -34,3 +34,7 @@ build/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local runtime & nested folders
+runtime/
+telegram-ai-priority-bot/

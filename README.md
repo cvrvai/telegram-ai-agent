@@ -115,13 +115,22 @@ DIGEST_SCHEDULE_TIMES=08:00,13:00,19:00,22:00
 
 ## 🎮 How to Run
 
-### 1. Start the Live Listener & Interactive Bot
+> 📖 **Full Guide:** For detailed walkthroughs on Telegram setup, userbot permissions, and Google Meet scheduling, see [docs/setup-guide.md](docs/setup-guide.md).
+
+### 1. Authorize Userbot Account (One-Time)
+Before running the background service, log in your personal Telegram account to generate the session file:
+```powershell
+.venv\Scripts\python.exe scripts\login_userbot.py
+```
+*Enter your phone number and the login code sent to Telegram. The authenticated session is saved to `runtime/telegram_ai_session.session`.*
+
+### 2. Start the Live Listener & Interactive Bot
 ```powershell
 .venv\Scripts\python.exe main.py run
 ```
-*On first startup, Telegram will send a login code to your Telegram app. Enter it in the terminal to save your login session.*
+*Both the personal Telethon Userbot and the interactive Telegram Bot Assistant will connect concurrently.*
 
-### 2. Docker + MongoDB deployment
+### 3. Docker + MongoDB deployment
 
 MongoDB is the only runtime storage backend. Set `MONGO_URI` and start the stack:
 
@@ -172,6 +181,8 @@ Use `/id` if you need to display your Telegram user ID while configuring `OWNER_
 | Command | Description |
 | :--- | :--- |
 | `python main.py run` | Start the live Userbot listener, interactive bot, and digest scheduler |
+| `python scripts/login_userbot.py` | Interactive terminal login for personal Telethon userbot |
+| `python scripts/userbot_listener.py` | Standalone userbot listener & OpenClaw bridge |
 | `python main.py test` | Run the simulation test suite on sample messages |
 | `python main.py digest` | Trigger an immediate manual digest of pending messages |
 | `python main.py stats` | View database statistics (total messages, noise filtered, pending queue) |

@@ -229,7 +229,7 @@ def build_registry(telegram: bool = False) -> ToolRegistry:
         ToolDefinition(name="assign_work_item", description="Assign a work item to one approved user by name or ID.", input_schema=AssignmentInput, output_schema=JsonOutput, risk=write, required_permission="work.update", side_effect=True, approval_required=False, handler=assign_work_item),
     ]
     if telegram:
-        from app.telegram.sources import SourceInput, read_telegram_chat, select_telegram_chat, telegram_access
+        from app.telegram.sources import SourceInput, SendTelegramMessageInput, read_telegram_chat, select_telegram_chat, telegram_access, draft_telegram_message
         # Conversational release exposes read tools; existing explicit business
         # commands remain available through their service authorization.
         definitions = [tool for tool in definitions if tool.risk == read and tool.name != "search_messages"]
@@ -237,6 +237,7 @@ def build_registry(telegram: bool = False) -> ToolRegistry:
             ("read_telegram_chat", "Read/summarize one Telegram personal chat, group or Saved Messages. Resolves the name, asks permission, and retrieves the requested dates.", SourceInput, read_telegram_chat),
             ("select_telegram_chat", "Open Telegram buttons to search and select a group or personal chat, then grant read access and continue the request.", SourceInput, select_telegram_chat),
             ("telegram_access", "Show persistent history-read permissions with Telegram revoke buttons. Monitoring is managed separately in Setup.", LimitInput, telegram_access),
+            ("draft_telegram_message", "Prepare an outbound Telegram message to a contact/group for the owner to approve; does not send it directly.", SendTelegramMessageInput, draft_telegram_message),
         ]:
             definitions.append(ToolDefinition(name=name, description=description, input_schema=schema, output_schema=JsonOutput,
                 risk=read, required_permission="source.read", side_effect=False, approval_required=False, handler=handler))
