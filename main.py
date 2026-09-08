@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from html import escape
-import logging
+import re
 import sys
 import tempfile
 import threading
+import time
 from datetime import datetime, timedelta, timezone
+from html import escape
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -82,6 +84,7 @@ class TelegramPriorityApp:
         # Explicit, owner-approved requests to read a chat outside the saved
         # monitoring scope. Entries are removed after a one-time request.
         self._pending_access_requests: dict[tuple[int, int], dict] = {}
+        self._last_user_attachment: dict[int, dict] = {}
         # Business-assistant services are transport independent. Telegram
         # handlers below only translate events into this use case.
         from app.storage.mongo import MongoBusinessRepository
@@ -1567,12 +1570,11 @@ class TelegramPriorityApp:
                     await event.respond(f"❌ Pairing {code.upper()} denied.")
                 return
 
-            # Analyze a document or image attached to an authorized message.
-            # The temporary file is removed after the provider consumes it.
+            # Handle documents, images, or files attached to an authorized message.
             attached_media = getattr(getattr(event, "message", None), "media", None)
             if attached_media is not None:
-                inbox = Path(tempfile.gettempdir()) / "telegram-ai-inbox"
-                inbox.mkdir(parents=True, exist_ok=True)
+                attachments_dir = Path("runtime/attachments")
+                attachments_dir.mkdir(parents=True, exist_ok=True)
                 media_file = getattr(getattr(event, "message", None), "file", None)
                 media_name = getattr(media_file, "name", None) or ""
                 media_suffix = Path(media_name).suffix.lower()
@@ -1581,33 +1583,85 @@ class TelegramPriorityApp:
                 if not media_suffix:
                     mime_type = getattr(media_file, "mime_type", "") or ""
                     media_suffix = {"application/pdf": ".pdf", "text/plain": ".txt", "text/markdown": ".md"}.get(mime_type, ".bin")
-                media_path = inbox / f"{event.chat_id}-{getattr(event, 'id', 'message')}{media_suffix}"
+                if not media_name:
+                    media_name = f"attachment{media_suffix}"
+
+                safe_stem = re.sub(r'[^\w\-_\.]', '_', Path(media_name).stem)
+                saved_path = attachments_dir / f"{int(time.time())}_{event.chat_id}_{safe_stem}{media_suffix}"
                 try:
-                    downloaded = await event.download_media(file=str(media_path))
-                    if downloaded:
-                        answer = await self.business_assistant.answer_file(
-                            user_id=user_id,
-                            chat_id=event.chat_id,
-                            chat_type=chat_type,
-                            file_path=downloaded,
-                            question=text or "Summarize this file and list the important business points.",
-                        )
-                        await event.respond(answer, parse_mode="HTML", buttons=get_main_menu())
-                    else:
+                    downloaded = await event.download_media(file=str(saved_path))
+                    if not downloaded:
                         await event.respond("⚠️ I could not download that attachment.")
-                except ValueError:
-                    await event.respond("Usage: <code>/project Name | department_id | description | start date | target date</code>", parse_mode="HTML")
+                        return
+
+                    # Cache for follow-up references
+                    self._last_user_attachment[user_id] = {
+                        "path": str(saved_path),
+                        "name": media_name,
+                        "timestamp": time.time(),
+                    }
+
+                    # Check if the user's caption is an instruction to send/forward this document
+                    send_file_pattern = re.compile(
+                        r'^(?:please\s+)?(?:send|forward|share|deliver)\s+(?:this\s+)?(?:[a-zA-Z0-9_\.-]+\s+)?(?:to|with)\s+([^:\n]+?)(?:(?::|\s+with\s+(?:message|caption|text)[:\s]+)(.*))?$',
+                        re.IGNORECASE
+                    )
+                    m = send_file_pattern.match(text) if text else None
+                    if m:
+                        recipient_hint = m.group(1).strip()
+                        custom_caption = (m.group(2) or "").strip()
+                        directory = await self.conversation.sources.directory()
+                        candidates = self.conversation.sources.matches(directory, recipient_hint)
+                        if candidates:
+                            target_id = str(candidates[0]["id"])
+                            target_title = candidates[0]["title"]
+                        else:
+                            target_id = recipient_hint
+                            target_title = recipient_hint
+
+                        payload = json.dumps({
+                            "file_path": str(saved_path),
+                            "file_name": media_name,
+                            "caption": custom_caption,
+                            "recipient_title": target_title,
+                        })
+                        action_id = await self.business_assistant.draft_action(
+                            user_id, event.chat_id, chat_type, "send_file", target_id, payload, 15
+                        )
+                        caption_preview = f"\n💬 <b>Caption:</b> <i>\"{escape(custom_caption)}\"</i>" if custom_caption else ""
+                        await event.respond(
+                            f"📝 <b>Document Draft Ready</b> (#{escape(str(action_id))})\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"📄 <b>File:</b> {escape(media_name)}\n"
+                            f"👤 <b>To:</b> {escape(target_title)}{caption_preview}\n\n"
+                            f"Approve sending this document from your account?",
+                            parse_mode="HTML",
+                            buttons=[[
+                                Button.inline("✅ Approve", data=f"action_approve_{action_id}".encode()),
+                                Button.inline("❌ Reject", data=f"action_deny_{action_id}".encode()),
+                            ]]
+                        )
+                        return
+
+                    # Otherwise, analyze or summarize the file
+                    answer = await self.business_assistant.answer_file(
+                        user_id=user_id,
+                        chat_id=event.chat_id,
+                        chat_type=chat_type,
+                        file_path=str(saved_path),
+                        question=text or "Summarize this file and list the important business points.",
+                    )
+                    await event.respond(answer, parse_mode="HTML", buttons=get_main_menu())
+                except (ValueError, RuntimeError) as exc:
+                    logger.warning("Document processing error: %s", exc)
+                    await event.respond(f"⚠️ Could not process document: {escape(str(exc))}", parse_mode="HTML")
                 except PermissionError:
                     await event.respond("🔒 Access not approved.")
                 except BudgetExceeded:
                     await event.respond("⏸️ The AI allowance is currently used. Please contact the administrator.")
-                except RuntimeError as exc:
-                    await event.respond(f"⚠️ {exc}")
-                finally:
-                    try:
-                        Path(media_path).unlink(missing_ok=True)
-                    except OSError:
-                        logger.warning("Could not remove temporary Telegram attachment %s", media_path)
+                except Exception as exc:
+                    logger.exception("Unexpected error processing attachment")
+                    await event.respond(f"⚠️ An error occurred while reading the file: {escape(str(exc))}", parse_mode="HTML")
                 return
 
             # 1. Start or Menu command
@@ -1787,7 +1841,53 @@ class TelegramPriorityApp:
                 except Exception as exc:
                     logger.warning("Live fetch failed: %s", exc)
                     await event.respond("⚠️ I could not fetch that public source. Check the URL and try again.", buttons=get_main_menu())
-                return
+            # Outbound file draft from recent attachment if user says "send this pdf to <recipient>"
+            send_file_pattern = re.compile(
+                r'^(?:please\s+)?(?:send|forward|share|deliver)\s+(?:this\s+)?(?:[a-zA-Z0-9_\.-]+\s+)?(?:to|with)\s+([^:\n]+?)(?:(?::|\s+with\s+(?:message|caption|text)[:\s]+)(.*))?$',
+                re.IGNORECASE
+            )
+            file_match = send_file_pattern.match(text) if text else None
+            if file_match and any(w in text_lower for w in ("file", "pdf", "doc", "document", "attachment", "image", "photo", "this")):
+                recent = self._last_user_attachment.get(user_id)
+                if recent and Path(recent["path"]).is_file() and (time.time() - recent.get("timestamp", 0) < 1800):
+                    recipient_hint = file_match.group(1).strip()
+                    custom_caption = (file_match.group(2) or "").strip()
+                    directory = await self.conversation.sources.directory()
+                    candidates = self.conversation.sources.matches(directory, recipient_hint)
+                    if candidates:
+                        target_id = str(candidates[0]["id"])
+                        target_title = candidates[0]["title"]
+                    else:
+                        target_id = recipient_hint
+                        target_title = recipient_hint
+
+                    payload = json.dumps({
+                        "file_path": recent["path"],
+                        "file_name": recent["name"],
+                        "caption": custom_caption,
+                        "recipient_title": target_title,
+                    })
+                    try:
+                        action_id = await self.business_assistant.draft_action(
+                            user_id, event.chat_id, chat_type, "send_file", target_id, payload, 15
+                        )
+                        caption_preview = f"\n💬 <b>Caption:</b> <i>\"{escape(custom_caption)}\"</i>" if custom_caption else ""
+                        await event.respond(
+                            f"📝 <b>Document Draft Ready</b> (#{escape(str(action_id))})\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"📄 <b>File:</b> {escape(recent['name'])}\n"
+                            f"👤 <b>To:</b> {escape(target_title)}{caption_preview}\n\n"
+                            f"Approve sending this document from your account?",
+                            parse_mode="HTML",
+                            buttons=[[
+                                Button.inline("✅ Approve", data=f"action_approve_{action_id}".encode()),
+                                Button.inline("❌ Reject", data=f"action_deny_{action_id}".encode()),
+                            ]]
+                        )
+                    except PermissionError:
+                        await event.respond("🔒 Only approved users can create outbound drafts.")
+                    return
+
             if text_lower.startswith("/draft "):
                 parts = text.split(maxsplit=2)
                 if len(parts) < 3:
@@ -2334,6 +2434,35 @@ class TelegramPriorityApp:
                             if not sent:
                                 await bot_client.send_message(target_peer, action["payload"])
                             confirmation = "✅ Message sent after approval."
+                        elif action.get("action_type") == "send_file":
+                            target = action["target"]
+                            try:
+                                target_peer = int(target)
+                            except (ValueError, TypeError):
+                                target_peer = target
+                            file_payload = json.loads(action["payload"])
+                            file_path = file_payload.get("file_path")
+                            file_caption = file_payload.get("caption") or ""
+                            file_name = file_payload.get("file_name") or "document"
+                            recipient_title = file_payload.get("recipient_title") or str(target)
+                            sent = False
+                            if self.telethon_client and self.telethon_client.is_connected():
+                                try:
+                                    await self.telethon_client.send_file(
+                                        target_peer,
+                                        file_path,
+                                        caption=file_caption or None,
+                                    )
+                                    sent = True
+                                except Exception as u_err:
+                                    logger.warning("Userbot send_file failed, trying bot client: %s", u_err)
+                            if not sent:
+                                await bot_client.send_file(
+                                    target_peer,
+                                    file_path,
+                                    caption=file_caption or None,
+                                )
+                            confirmation = f"✅ Document <b>{escape(file_name)}</b> sent to <b>{escape(recipient_title)}</b> after approval."
                         else:
                             payload = json.loads(action["payload"])
                             action_type = action.get("action_type")
