@@ -541,10 +541,7 @@ class TelegramPriorityApp:
             if not self._focus_settings:
                 return [[Button.inline("⚙️ Complete setup first", data=b"btn_setup")]]
             return [
-                [Button.inline("➕ New Task", data=b"btn_new_task"), Button.inline("📁 Projects", data=b"btn_projects")],
-                [Button.inline("⏰ Due Soon", data=b"btn_due"), Button.inline("📋 Digest", data=b"btn_digest")],
-                [Button.inline("✅ My Work", data=b"btn_mywork"), Button.inline("📋 Brief", data=b"btn_brief")],
-                [Button.inline("⋯ More", data=b"btn_more")],
+                [Button.inline("📋 Instant Digest", data=b"btn_digest"), Button.inline("🔐 Manage Bot", data=b"btn_access")],
             ]
 
         def get_tier_menu(current_tier: str):
@@ -652,39 +649,35 @@ class TelegramPriorityApp:
             return state
 
         def setup_home_buttons(state: dict):
-            buttons = []
-            assistants = list(self.assistant_services)
-            for start in range(0, len(assistants), 2):
-                buttons.append([
-                    Button.inline(
-                        ("✅ " if state.get("assistant_id") == assistant_id else "🤖 ") + assistant_id,
-                        data=f"setup_assistant_{assistant_id}".encode(),
-                    )
-                    for assistant_id in assistants[start:start + 2]
-                ])
-            buttons.extend([
-                [Button.inline("💬 Manage Sources", data=b"setup_chats"), Button.inline("👥 Manage Access", data=b"setup_add_user")],
-                [Button.inline("💾 Save Changes", data=b"setup_save")],
-                [Button.inline("🏠 Home", data=b"btn_menu")],
-            ])
-            return buttons
+            return [
+                [Button.inline("👥 Select Groups", data=b"setup_groups"), Button.inline("👤 Select People", data=b"setup_people")],
+                [Button.inline("🔐 Revoke / Access", data=b"btn_access")],
+            ]
 
         async def render_setup_home(event, user_id: int):
             state = setup_state(user_id)
-            selected = state.get("chats", {})
+            selected = {
+                chat_id: {
+                    "chat_title": row.get("chat_title") or "Chat",
+                    "chat_type": row.get("chat_type") or "private",
+                    "mode": row.get("mode") or "monitor",
+                }
+                for chat_id, row in self._focus_settings.items()
+            }
+            state["chats"] = selected
             lines = [
                 "⚙️ <b>Workspace setup</b>",
                 "<i>Choose which chats this assistant should focus on.</i>",
                 "━━━━━━━━━━━━━━━━━━━━━━",
-                f"🤖 <b>Assistant:</b> {escape(state.get('assistant_id', 'business'))}",
-                "",
                 "<b>💬 Sources</b>",
             ]
             if selected:
                 for chat_id, row in selected.items():
+                    chat_type = row.get("chat_type", "private")
+                    icon = "👤" if chat_type == "private" else ("📣" if chat_type == "channel" else "👥")
                     mode = row.get("mode", "monitor")
                     mode_label = {"monitor": "Everything", "mention": "Mentions only", "orders": "Action items"}.get(mode, "Active")
-                    lines.append(f"🟢 {escape(clip_text(row.get('chat_title', 'Chat'), 35))} · {mode_label}")
+                    lines.append(f"🟢 {icon} {escape(clip_text(row.get('chat_title', 'Chat'), 35))} · {mode_label}")
             else:
                 lines.append("• No chats selected yet")
             members = sorted(int(uid) for uid in state.get("users", set()))
@@ -722,35 +715,43 @@ class TelegramPriorityApp:
                     if query in str(row.get("chat_title", "")).casefold()
                     or query in str(row.get("chat_username", "")).casefold()
                 ]
-            selected_ids = set(state.get("chats", {}))
-            dialogs.sort(key=lambda row: (row["chat_id"] not in selected_ids, row["chat_title"].lower()))
-            page_size = 12
+            selected_ids = set(self._focus_settings) | set(state.get("chats", {}))
+            dialogs.sort(key=lambda row: (row["chat_id"] not in selected_ids, str(row.get("chat_title", "")).lower()))
+            page_size = 10
             page_count = max(1, (len(dialogs) + page_size - 1) // page_size)
             page = max(0, min(int(page), page_count - 1))
             state["picker_page"] = page
             page_dialogs = dialogs[page * page_size:(page + 1) * page_size]
+            title_icon = "👥" if kind == "groups" else ("👤" if kind == "people" else "📂")
+            kind_title = "Groups" if kind == "groups" else ("People" if kind == "people" else "Chats")
             lines = [
-                f"{'👥' if kind == 'groups' else '👤' if kind == 'people' else '📂'} <b>Select {'groups' if kind == 'groups' else 'people' if kind == 'people' else 'chats'}</b> · {page + 1}/{page_count}",
-                "Tap a name to select it. Choose what the assistant should watch.",
+                f"{title_icon} <b>Select {kind_title}</b> · Page {page + 1}/{page_count}",
+                "<i>Tap any chat to immediately toggle monitoring on/off.</i>",
                 "━━━━━━━━━━━━━━━━━━━━━━",
-                f"Selected chats (total): <b>{len(selected_ids)}</b>",
+                f"🟢 Currently Monitored: <b>{len(self._focus_settings)}</b> chat(s)",
             ]
             if query:
-                lines.append(f"Search: <code>{escape(query)}</code>")
+                lines.append(f"🔍 Search query: <code>{escape(query)}</code>")
+            if not dialogs:
+                lines.append(f"\n<i>No {kind_title.lower()} found{load_error}.</i>")
+
             buttons = []
             for dialog in page_dialogs:
                 chat_id = dialog["chat_id"]
-                row = state.get("chats", {}).get(chat_id)
-                marker = "✅" if row else "⬜"
-                mode = row.get("mode", "monitor") if row else "off"
-                mode_label = {"monitor": "Everything", "mention": "Mentions only", "orders": "Action items"}.get(mode, "Off")
-                lines.append(f"{marker} <b>{escape(clip_text(dialog['chat_title'], 34))}</b> · {mode_label}")
+                is_selected = chat_id in self._focus_settings or chat_id in state.get("chats", {})
+                marker = "✅" if is_selected else "➕"
+                chat_type = dialog.get("chat_type", "private")
+                type_icon = "👤" if chat_type == "private" else ("📣" if chat_type == "channel" else "👥")
                 buttons.append([
-                    Button.inline(f"{marker} {clip_text(dialog['chat_title'], 22)}", data=f"setup_pick_{chat_id}".encode()),
-                    Button.inline("⚙️ Watch", data=f"setup_modes_{chat_id}".encode()),
+                    Button.inline(f"{marker} {type_icon} {clip_text(dialog['chat_title'], 28)}", data=f"setup_pick_{chat_id}".encode())
                 ])
-            if not dialogs:
-                lines.append(f"No Telegram chats were found{load_error}. Keep the user account connected and try again.")
+
+            tabs = [
+                Button.inline(("🔹 " if kind == "groups" else "") + "👥 Groups", data=b"setup_groups"),
+                Button.inline(("🔹 " if kind == "people" else "") + "👤 People", data=b"setup_people"),
+                Button.inline(("🔹 " if kind == "all" else "") + "📂 All", data=b"setup_chats"),
+            ]
+            buttons.append(tabs)
             nav = []
             if page > 0:
                 nav.append(Button.inline("⬅️ Previous", data=f"setup_page_{kind}_{page - 1}".encode()))
@@ -760,9 +761,12 @@ class TelegramPriorityApp:
                 buttons.append(nav)
             search_buttons = [Button.inline("🔍 Search", data=b"setup_search")]
             if query:
-                search_buttons.append(Button.inline("✖ Clear", data=b"setup_clear_search"))
+                search_buttons.append(Button.inline("✖ Clear Search", data=b"setup_clear_search"))
             buttons.append(search_buttons)
-            buttons.append([Button.inline("✅ Done", data=b"setup_home")])
+            buttons.append([
+                Button.inline("🔐 Revoke / Access", data=b"btn_access"),
+                Button.inline("⚙️ Setup Menu", data=b"setup_home"),
+            ])
             await safe_edit_or_respond(event, "\n".join(lines), buttons)
 
         async def render_setup_mode(event, user_id: int, chat_id: int):
@@ -1062,25 +1066,42 @@ class TelegramPriorityApp:
             sources = await self.business_repository.list_focus_scopes("business")
             source_lines = []
             group_lines = []
+            revoke_buttons = []
             for row in sources:
+                chat_id = int(row.get("chat_id"))
+                chat_title = row.get("chat_title") or str(chat_id)
                 chat_type = row.get("chat_type") or "private"
                 icon = "👤" if chat_type == "private" else ("📣" if chat_type == "channel" else "👥")
                 mode = {"monitor": "Everything", "mention": "Mentions only", "orders": "Action items"}.get(row.get("mode"), "Active")
-                label = f"{icon} {row.get('chat_title') or row.get('chat_id')} · {mode}"
-                source_lines.append(f"• {label}")
+                label = f"{icon} {chat_title} · {mode}"
+                source_lines.append(f"🟢 {escape(label)}")
                 if chat_type in {"group", "channel"}:
-                    group_lines.append(f"• {label}")
+                    group_lines.append(f"• {escape(label)}")
+                revoke_buttons.append([
+                    Button.inline(f"❌ Revoke: {clip_text(chat_title, 22)}", data=f"revoke_chat_{chat_id}".encode())
+                ])
+
             text = (
-                "🔐 <b>Bot access</b>\n\n"
-                f"<b>Owner:</b> <code>{escape(str(self.business_access.owner_id))}</code>\n"
-                f"<b>Approved people:</b> {escape(', '.join(approved_users) or 'none')}\n"
-                "<b>Approved group chats:</b>\n"
-                + ("\n".join(group_lines) if group_lines else "• none")
-                + "\n\n<b>Message sources the bot may read:</b>\n"
-                + ("\n".join(source_lines) if source_lines else "• none")
-                + "\n\nA selected personal chat is a read source; it does not grant that person permission to use the bot. Group access and message-source access are also managed separately."
+                "🔐 <b>Bot Access & Permissions Manager</b>\n\n"
+                f"<b>👑 Owner:</b> <code>{escape(str(self.business_access.owner_id))}</code>\n"
+                f"<b>👥 Approved Members:</b> {escape(', '.join(approved_users) or 'none')}\n\n"
+                "<b>💬 Monitored Sources (Reading Enabled):</b>\n"
+                + ("\n".join(source_lines) if source_lines else "<i>• No chats or groups currently monitored</i>")
+                + "\n\n━━━━━━━━━━━━━━━━━━━━━━\n"
+                "• Tap a <b>❌ Revoke</b> button below to immediately stop monitoring a chat.\n"
+                "• Tap <b>👥 Select Groups</b> to choose groups for the bot to monitor."
             )
-            await safe_edit_or_respond(event, text, [[Button.inline("⚙️ Manage setup", data=b"btn_setup")], [Button.inline("🏠 Home", data=b"btn_menu")]])
+            buttons = []
+            if revoke_buttons:
+                buttons.extend(revoke_buttons[:10])
+            buttons.append([
+                Button.inline("👥 Select Groups", data=b"setup_groups"),
+                Button.inline("👤 Select People", data=b"setup_people"),
+            ])
+            buttons.append([
+                Button.inline("⚙️ Setup Menu", data=b"setup_home"),
+            ])
+            await safe_edit_or_respond(event, text, buttons)
 
         async def render_reminders_view(event):
             user_id = getattr(event, "sender_id", None)
@@ -1422,6 +1443,52 @@ class TelegramPriorityApp:
                 except (PermissionError, ValueError) as exc:
                     await event.respond(f"⚠️ {escape(str(exc))}", parse_mode="HTML", buttons=get_main_menu())
                 return
+
+            # Automatically load /manage or /groups if user intent matches
+            group_intent_phrases = {
+                "select group", "select groups", "add group", "add groups", "more group", "more groups",
+                "choose group", "choose groups", "pick group", "pick groups", "read group", "read groups",
+                "monitor group", "monitor groups", "group access", "group list", "manage group", "manage groups"
+            }
+            people_intent_phrases = {
+                "select people", "select person", "select contact", "select contacts",
+                "add people", "add person", "add contact", "add contacts", "more contact", "more people"
+            }
+            manage_intent_phrases = {
+                "manage", "manage bot", "manage access", "manage permissions", "bot access",
+                "revoke", "revoke access", "revoke permission", "remove group", "remove chat",
+                "stop monitoring", "permissions", "who can access", "who has access", "setup bot"
+            }
+            is_group_intent = any(phrase in text_lower for phrase in group_intent_phrases)
+            is_people_intent = any(phrase in text_lower for phrase in people_intent_phrases)
+            is_manage_intent = any(phrase in text_lower for phrase in manage_intent_phrases)
+
+            if event.is_private and user_id == self.business_access.owner_id:
+                if is_group_intent or text_lower in {"/groups", "/group", "/setup groups"}:
+                    state = setup_state(user_id)
+                    state["picker_query"] = ""
+                    state["awaiting_search"] = False
+                    await render_setup_chats(event, user_id, "groups", 0)
+                    return
+                if is_people_intent or text_lower in {"/people", "/setup people"}:
+                    state = setup_state(user_id)
+                    state["picker_query"] = ""
+                    state["awaiting_search"] = False
+                    await render_setup_chats(event, user_id, "people", 0)
+                    return
+                if is_manage_intent or text_lower in {"/manage", "/access", "/revoke", "/permissions"}:
+                    await render_access_view(event)
+                    return
+                if not self._focus_settings:
+                    summary_phrases = {"summary", "summarize", "digest", "brief", "what happened", "updates"}
+                    if any(phrase in text_lower for phrase in summary_phrases) and not any(k in text_lower for k in ("project", "task", "event", "calendar", "email", "send", "draft")):
+                        await event.respond(
+                            "ℹ️ <b>No chats or groups are currently monitored.</b>\n\n"
+                            "Please select which groups or people you would like the bot to read:",
+                            parse_mode="HTML"
+                        )
+                        await render_access_view(event)
+                        return
 
             # Owner-only focus setup. This is intentionally separate from the
             # ordinary business commands so the owner can configure the
@@ -2040,6 +2107,27 @@ class TelegramPriorityApp:
                 return
 
 
+            if data.startswith(b"revoke_chat_"):
+                if callback_user_id != self.business_access.owner_id:
+                    await event.answer("Only the owner can revoke chat access", alert=True)
+                    return
+                chat_id = int(data.decode().split("_", 2)[2])
+                await self.business_repository.disable_focus_scope("business", chat_id)
+                revoked_focus = self._focus_settings.pop(chat_id, None)
+                title = (revoked_focus.get("chat_title") if revoked_focus else None) or f"Chat {chat_id}"
+                self.business_access.approved_groups.discard(chat_id)
+                for uid, s in self._setup_state.items():
+                    if "chats" in s:
+                        s["chats"].pop(chat_id, None)
+                try:
+                    from app.agent.state import now
+                    await agent_state.grants.update_many({"source_id": chat_id}, {"$set": {"enabled": False, "updated_at": now()}})
+                except Exception:
+                    pass
+                await event.answer(f"Revoked access for {title}!", alert=True)
+                await render_access_view(event)
+                return
+
             if data.startswith(b"setup_") or data == b"btn_setup":
                 if callback_user_id != self.business_access.owner_id:
                     await event.answer("Only the owner can change workspace setup", alert=True)
@@ -2114,8 +2202,12 @@ class TelegramPriorityApp:
                     chat_id = int(data.decode().split("_", 2)[2])
                     state = setup_state(callback_user_id)
                     chats = state.setdefault("chats", {})
-                    if chat_id in chats:
+                    if chat_id in chats or chat_id in self._focus_settings:
                         chats.pop(chat_id, None)
+                        await self.business_repository.disable_focus_scope("business", chat_id)
+                        self._focus_settings.pop(chat_id, None)
+                        self.business_access.approved_groups.discard(chat_id)
+                        await event.answer("❌ Removed from monitoring")
                     else:
                         try:
                             dialogs = await setup_dialogs()
@@ -2125,7 +2217,26 @@ class TelegramPriorityApp:
                         dialog = next((row for row in dialogs if row["chat_id"] == chat_id), None)
                         if dialog:
                             chats[chat_id] = {**dialog, "mode": "monitor"}
-                    await event.answer("Chat selection updated")
+                            await self.business_repository.upsert_focus_scope(
+                                "business",
+                                int(chat_id),
+                                dialog.get("chat_title", "Chat"),
+                                dialog.get("chat_type", "private"),
+                                "monitor",
+                                True,
+                            )
+                            self._focus_settings[chat_id] = {
+                                "chat_id": chat_id,
+                                "chat_title": dialog.get("chat_title", "Chat"),
+                                "chat_type": dialog.get("chat_type", "private"),
+                                "mode": "monitor",
+                                "enabled": True,
+                            }
+                            if dialog.get("chat_type") in {"group", "channel"}:
+                                self.business_access.approved_groups.add(chat_id)
+                            await event.answer(f"✅ Added: {clip_text(dialog.get('chat_title', 'Chat'), 25)}")
+                        else:
+                            await event.answer("Chat not found", alert=True)
                     state = setup_state(callback_user_id)
                     await render_setup_chats(event, callback_user_id, state.get("picker_kind", "all"), state.get("picker_page", 0))
                     return
@@ -2140,6 +2251,14 @@ class TelegramPriorityApp:
                     state = setup_state(callback_user_id)
                     if chat_id in state.get("chats", {}):
                         state["chats"][chat_id]["mode"] = mode
+                        await self.business_repository.upsert_focus_scope(
+                            "business", chat_id,
+                            state["chats"][chat_id].get("chat_title", "Chat"),
+                            state["chats"][chat_id].get("chat_type", "private"),
+                            mode, True
+                        )
+                        if chat_id in self._focus_settings:
+                            self._focus_settings[chat_id]["mode"] = mode
                     await event.answer("Focus mode updated")
                     await render_setup_chats(event, callback_user_id, state.get("picker_kind", "all"), state.get("picker_page", 0))
                     return
@@ -2147,7 +2266,10 @@ class TelegramPriorityApp:
                     chat_id = int(data.decode().split("_", 2)[2])
                     state = setup_state(callback_user_id)
                     state.get("chats", {}).pop(chat_id, None)
-                    await event.answer("Chat removed")
+                    await self.business_repository.disable_focus_scope("business", chat_id)
+                    self._focus_settings.pop(chat_id, None)
+                    self.business_access.approved_groups.discard(chat_id)
+                    await event.answer("Chat removed from monitoring")
                     await render_setup_chats(event, callback_user_id, state.get("picker_kind", "all"), state.get("picker_page", 0))
                     return
                 if data == b"setup_save":
@@ -2164,8 +2286,102 @@ class TelegramPriorityApp:
                         await render_setup_home(event, callback_user_id)
                     return
 
+            if data == b"btn_access":
+                await event.answer("Loading access settings...")
+                await render_access_view(event)
+                return
+
+            if data == b"btn_more":
+                await event.answer()
+                await render_more(event)
+                return
+
+            if data == b"btn_menu":
+                await event.answer()
+                if self._focus_settings:
+                    await render_home(event)
+                else:
+                    await safe_edit_or_respond(event, get_welcome_text(), get_main_menu())
+                return
+
+            if data.startswith(b"action_"):
+                parts = data.decode().split("_", 2)
+                action_status = "approved" if parts[1] == "approve" else "rejected"
+                action_id = parts[2]
+                # Outbound sends are always explicit and single-use.
+                if callback_user_id != self.business_access.owner_id:
+                    await event.answer("Only the owner can approve outbound messages", alert=True)
+                    return
+                action = await self.business_repository.resolve_action(action_id, callback_user_id, action_status)
+                if not action:
+                    await event.answer("Draft expired or already resolved", alert=True)
+                    return
+                if action_status == "approved":
+                    try:
+                        if action.get("action_type") == "send_message":
+                            target = action["target"]
+                            try:
+                                target_peer = int(target)
+                            except (ValueError, TypeError):
+                                target_peer = target
+                            sent = False
+                            if self.telethon_client and self.telethon_client.is_connected():
+                                try:
+                                    await self.telethon_client.send_message(target_peer, action["payload"])
+                                    sent = True
+                                except Exception as u_err:
+                                    logger.warning("Userbot send failed, trying bot client: %s", u_err)
+                            if not sent:
+                                await bot_client.send_message(target_peer, action["payload"])
+                            confirmation = "✅ Message sent after approval."
+                        else:
+                            payload = json.loads(action["payload"])
+                            action_type = action.get("action_type")
+                            google_credentials = await self.google_account.get_credentials(callback_user_id) if action_type in {"email", "calendar"} else None
+                            if action_type == "email":
+                                if google_credentials:
+                                    from app.integrations.google_gmail import send_message as google_send_message
+                                    await google_send_message(google_credentials, to=payload["to"], subject=payload["subject"], body=payload["body"])
+                                    confirmation = "✅ Email sent via Gmail after approval."
+                                elif self.integrations.configured("email"):
+                                    await self.integrations.send_email(**payload)
+                                    confirmation = "✅ Email sent after approval."
+                                else:
+                                    confirmation = "⚠️ Approved, but Gmail is not connected yet. Send /connectgoogle first, then try again."
+                            elif action.get("action_type") == "calendar":
+                                if google_credentials:
+                                    from app.integrations.google_calendar import create_event as google_create_event
+                                    attendee_email = payload.get("attendee_email")
+                                    created = await google_create_event(
+                                        google_credentials, summary=payload["title"], start=payload["start"], end=payload.get("end"),
+                                        location=payload.get("location"), add_video_call=payload.get("meeting_type") == "online",
+                                        attendees=[attendee_email] if attendee_email else None,
+                                    )
+                                    confirmation = f"✅ Calendar event created: <a href=\"{escape(created['link'] or '')}\">{escape(created['summary'] or '')}</a>"
+                                    if created.get("meet_link"):
+                                        confirmation += f"\n🎥 Google Meet: <a href=\"{escape(created['meet_link'])}\">{escape(created['meet_link'])}</a>"
+                                elif self.integrations.configured("calendar"):
+                                    await self.integrations.create_calendar_event(title=payload["title"], start=payload["start"], end=payload.get("end"))
+                                    confirmation = "✅ Calendar event created after approval."
+                                else:
+                                    confirmation = "⚠️ Approved, but Google Calendar is not connected yet. Send /connectgoogle first, then try again."
+                            elif action.get("action_type") == "crm":
+                                await self.integrations.create_crm_record(**payload)
+                                confirmation = "✅ CRM record created after approval."
+                            else:
+                                await self.integrations.create_task(**payload)
+                                confirmation = "✅ External task created after approval."
+                        await safe_edit_or_respond(event, confirmation)
+                    except Exception as exc:
+                        logger.exception("Approved %s action failed", action.get("action_type") or "outbound")
+                        await safe_edit_or_respond(event, describe_action_failure(action.get("action_type"), exc))
+                else:
+                    await safe_edit_or_respond(event, "❌ Draft rejected; nothing was sent.")
+                return
+
             if not self._focus_settings:
-                await event.answer("Complete workspace setup before using the assistant", alert=True)
+                await event.answer("No chats currently monitored. Loading Bot Manager...", alert=False)
+                await render_access_view(event)
                 return
 
             if data.startswith((b"access_once_", b"access_always_")) or data == b"access_cancel":
@@ -2217,72 +2433,6 @@ class TelegramPriorityApp:
                         await event.answer(str(exc), alert=True)
                     return
 
-            if data.startswith(b"action_"):
-                parts = data.decode().split("_", 2)
-                action_status = "approved" if parts[1] == "approve" else "rejected"
-                action_id = parts[2]
-                # Outbound sends are always explicit and single-use.
-                if callback_user_id != self.business_access.owner_id:
-                    await event.answer("Only the owner can approve outbound messages", alert=True)
-                    return
-                action = await self.business_repository.resolve_action(action_id, callback_user_id, action_status)
-                if not action:
-                    await event.answer("Draft expired or already resolved", alert=True)
-                    return
-                if action_status == "approved":
-                    try:
-                        if action.get("action_type") == "send_message":
-                            await bot_client.send_message(action["target"], action["payload"])
-                            confirmation = "✅ Message sent after approval."
-                        else:
-                            payload = json.loads(action["payload"])
-                            action_type = action.get("action_type")
-                            # Google Calendar/Gmail take priority over the
-                            # generic webhook stub once the owner has
-                            # connected an account with /connectgoogle.
-                            google_credentials = await self.google_account.get_credentials(callback_user_id) if action_type in {"email", "calendar"} else None
-                            if action_type == "email":
-                                if google_credentials:
-                                    from app.integrations.google_gmail import send_message as google_send_message
-                                    await google_send_message(google_credentials, to=payload["to"], subject=payload["subject"], body=payload["body"])
-                                    confirmation = "✅ Email sent via Gmail after approval."
-                                elif self.integrations.configured("email"):
-                                    await self.integrations.send_email(**payload)
-                                    confirmation = "✅ Email sent after approval."
-                                else:
-                                    confirmation = "⚠️ Approved, but Gmail is not connected yet. Send /connectgoogle first, then try again."
-                            elif action.get("action_type") == "calendar":
-                                if google_credentials:
-                                    from app.integrations.google_calendar import create_event as google_create_event
-                                    attendee_email = payload.get("attendee_email")
-                                    created = await google_create_event(
-                                        google_credentials, summary=payload["title"], start=payload["start"], end=payload.get("end"),
-                                        location=payload.get("location"), add_video_call=payload.get("meeting_type") == "online",
-                                        attendees=[attendee_email] if attendee_email else None,
-                                    )
-                                    confirmation = f"✅ Calendar event created: <a href=\"{escape(created['link'] or '')}\">{escape(created['summary'] or '')}</a>"
-                                    if created.get("meet_link"):
-                                        confirmation += f"\n🎥 Google Meet: <a href=\"{escape(created['meet_link'])}\">{escape(created['meet_link'])}</a>"
-                                elif self.integrations.configured("calendar"):
-                                    # Extracted, not **payload -- the agent-drafted payload can carry
-                                    # extra keys (meeting_type, location, attendee_email) this stub doesn't accept.
-                                    await self.integrations.create_calendar_event(title=payload["title"], start=payload["start"], end=payload.get("end"))
-                                    confirmation = "✅ Calendar event created after approval."
-                                else:
-                                    confirmation = "⚠️ Approved, but Google Calendar is not connected yet. Send /connectgoogle first, then try again."
-                            elif action.get("action_type") == "crm":
-                                await self.integrations.create_crm_record(**payload)
-                                confirmation = "✅ CRM record created after approval."
-                            else:
-                                await self.integrations.create_task(**payload)
-                                confirmation = "✅ External task created after approval."
-                        await safe_edit_or_respond(event, confirmation, get_main_menu())
-                    except Exception as exc:
-                        logger.exception("Approved %s action failed", action.get("action_type") or "outbound")
-                        await safe_edit_or_respond(event, describe_action_failure(action.get("action_type"), exc), get_main_menu())
-                else:
-                    await safe_edit_or_respond(event, "❌ Draft rejected; nothing was sent.", get_main_menu())
-                return
 
             # Check priority tier buttons (tier_P0, tier_P1, tier_P2, tier_P3)
             if data.startswith(b"tier_"):
@@ -2377,14 +2527,6 @@ class TelegramPriorityApp:
                 await event.answer("Checking due dates...")
                 await render_due_soon(event)
 
-            elif data == b"btn_more":
-                await event.answer()
-                await render_more(event)
-
-            elif data == b"btn_access":
-                await event.answer("Loading access settings...")
-                await render_access_view(event)
-
             elif data.startswith(b"project_board_"):
                 await event.answer("Loading project board...")
                 await render_project_board_view(event, data.decode().split("_", 2)[2])
@@ -2416,13 +2558,6 @@ class TelegramPriorityApp:
                     )
                 except PermissionError:
                     await event.answer("Access not approved", alert=True)
-
-            elif data == b"btn_menu":
-                await event.answer()
-                if self._focus_settings:
-                    await render_home(event)
-                else:
-                    await safe_edit_or_respond(event, get_welcome_text(), get_main_menu())
 
         await bot_client.run_until_disconnected()
 
