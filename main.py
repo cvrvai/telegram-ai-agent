@@ -1355,11 +1355,16 @@ class TelegramPriorityApp:
             # Ignore outgoing messages or messages sent by the bot itself to prevent infinite self-reply loops
             if getattr(event, "out", False) or getattr(getattr(event, "message", None), "out", False):
                 return
-            if bot_id and getattr(event, "sender_id", None) == bot_id:
+            sender_id = getattr(event, "sender_id", None)
+            if sender_id is None:
+                return
+            if bot_id and sender_id == bot_id:
+                return
+            if event.is_private and sender_id != event.chat_id:
                 return
             if getattr(getattr(event, "sender", None), "bot", False):
                 return
-            logger.info("Bot received incoming message from %s (chat %s): %s", getattr(event, "sender_id", None), event.chat_id, (event.raw_text or "")[:60])
+            logger.info("Bot received incoming message from %s (chat %s): %s", sender_id, event.chat_id, (event.raw_text or "")[:60])
 
             # Group conversations are opt-in and only respond to a mention or
             # reply. Ordinary group traffic remains silent.
@@ -2170,15 +2175,6 @@ class TelegramPriorityApp:
             # from private chat. Staff remain scoped until source access is
             # explicitly configured.
             chat_type = "private" if event.is_private else ("channel" if event.is_channel else "group")
-
-            # Keep greetings conversational. They should not trigger the work
-            # agent or advertise task/project features before the user asks
-            # for them.
-            if assistant is self.business_assistant and text_lower.strip() in {
-                "hi", "hello", "hey", "hiya", "good morning", "good afternoon", "good evening",
-            }:
-                await event.respond("Hello! How can I help you today?")
-                return
 
             if assistant is self.business_assistant:
                 await self.conversation.handle(event, text)
