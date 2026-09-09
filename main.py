@@ -2170,26 +2170,50 @@ class TelegramPriorityApp:
                 await render_brief_view(event, "month")
                 return
 
-            # 3c. Weekly meeting deck: a .pptx built from this week's situations
-            if text_lower in {"/weeklyreport", "/meetingdeck"}:
+            # 3c. Weekly meeting deck / report: .pptx or .pdf built from this week's situations
+            is_pdf_report = "pdf" in text_lower
+            deck_command_match = (
+                text_lower.startswith(("/weeklyreport", "/meetingdeck"))
+                or text_lower in {
+                    "create the slide power point", "create the slide", "create slides",
+                    "create powerpoint", "create a powerpoint", "make a powerpoint",
+                    "make powerpoint", "generate weekly report", "weekly report",
+                    "prepare the presentation", "prepare presentation", "meeting deck",
+                    "weekly presentation", "weekly deck", "weekly report in pdf",
+                    "weekly report pdf", "create weekly report pdf", "make weekly report",
+                }
+                or (
+                    any(p in text_lower for p in ("powerpoint", "slide", "deck", "weekly report"))
+                    and any(v in text_lower for v in ("create", "make", "generate", "prepare", "build", "give me", "send me"))
+                )
+            )
+            if deck_command_match:
                 if user_id != self.business_access.owner_id or not event.is_private:
-                    await event.respond("🔒 Only the owner can generate the weekly management deck.")
+                    await event.respond("🔒 Only the owner can generate the weekly management report.")
                     return
-                await event.respond("📊 Preparing this week's management deck...")
-                output_path = Path(tempfile.gettempdir()) / f"weekly-brief-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.pptx"
+                ext = "pdf" if is_pdf_report else "pptx"
+                fmt_desc = "executive PDF report" if is_pdf_report else "management PowerPoint deck"
+                await event.respond(f"📊 Preparing this week's {fmt_desc}...")
+                output_path = Path(tempfile.gettempdir()) / f"weekly-brief-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.{ext}"
                 try:
-                    from app.reporting.weekly_deck import WeeklyDeckBuilder
-                    builder = WeeklyDeckBuilder(self.db, self.business_repository)
-                    await builder.build(str(output_path), self.focused_chat_ids())
-                    await event.respond(file=str(output_path), message="📊 Weekly Management Brief — review before the meeting.")
+                    if is_pdf_report:
+                        from app.reporting.weekly_pdf import WeeklyPdfBuilder
+                        builder = WeeklyPdfBuilder(self.db, self.business_repository)
+                        await builder.build(str(output_path), self.focused_chat_ids())
+                        await event.respond(file=str(output_path), message="📄 Weekly Management Brief (PDF) — review before the meeting.")
+                    else:
+                        from app.reporting.weekly_deck import WeeklyDeckBuilder
+                        builder = WeeklyDeckBuilder(self.db, self.business_repository)
+                        await builder.build(str(output_path), self.focused_chat_ids())
+                        await event.respond(file=str(output_path), message="📊 Weekly Management Brief (PowerPoint) — review before the meeting.")
                 except Exception:
-                    logger.exception("Weekly deck generation failed")
-                    await event.respond("⚠️ Could not generate the weekly deck right now.")
+                    logger.exception("Weekly report generation failed")
+                    await event.respond(f"⚠️ Could not generate the weekly {ext.upper()} report right now.")
                 finally:
                     try:
                         output_path.unlink(missing_ok=True)
                     except OSError:
-                        logger.warning("Could not remove temporary weekly deck %s", output_path)
+                        logger.warning("Could not remove temporary weekly report %s", output_path)
                 return
 
             # 4. Instant Summary / Digest command

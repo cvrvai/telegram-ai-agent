@@ -34,6 +34,10 @@ class SituationIdInput(_Input):
 
 class WeeklyReportInput(_Input):
     title: str = Field(default="Weekly Management Brief", max_length=120)
+    format: Literal["pptx", "pdf"] = Field(
+        default="pptx",
+        description="Report format: 'pptx' for PowerPoint presentation slides, or 'pdf' for executive printable PDF document.",
+    )
 
 
 def _row(s: Any) -> dict:
@@ -92,17 +96,32 @@ async def resolve_situation(args: SituationIdInput, context: Any) -> Any:
 
 
 async def generate_weekly_report(args: WeeklyReportInput, context: Any) -> Any:
-    """Builds the .pptx and hands the path to the Telegram layer, which sends
+    """Builds the .pptx or .pdf and hands the path to the Telegram layer, which sends
     it as a document once the turn finishes (agents can only return text)."""
     db = context.message_database
     if db is None or context.repository is None:
         return {"error": "Reporting data is not available here."}
-    from app.reporting.weekly_deck import WeeklyDeckBuilder
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    path = os.path.join(tempfile.gettempdir(), f"weekly-brief-{stamp}.pptx")
-    builder = WeeklyDeckBuilder(db, context.repository)
     allowed = getattr(context, "allowed_chat_ids", None) or None
-    await builder.build(path, allowed, title=args.title)
-    context.session["pending_file"] = {"path": path, "caption": f"📊 {args.title} — review before the meeting."}
-    return {"generated": True, "slides": 9, "note": "The presentation file is being sent to this chat now."}
+    is_pdf = (args.format or "pptx").lower() == "pdf"
+
+    if is_pdf:
+        from app.reporting.weekly_pdf import WeeklyPdfBuilder
+
+        path = os.path.join(tempfile.gettempdir(), f"weekly-brief-{stamp}.pdf")
+        builder = WeeklyPdfBuilder(db, context.repository)
+        await builder.build(path, allowed, title=args.title)
+        caption = f"📄 {args.title} (PDF) — review before the meeting."
+        fmt_label = "PDF executive report"
+    else:
+        from app.reporting.weekly_deck import WeeklyDeckBuilder
+
+        path = os.path.join(tempfile.gettempdir(), f"weekly-brief-{stamp}.pptx")
+        builder = WeeklyDeckBuilder(db, context.repository)
+        await builder.build(path, allowed, title=args.title)
+        caption = f"📊 {args.title} (PowerPoint) — review before the meeting."
+        fmt_label = "PowerPoint presentation"
+
+    context.session["pending_file"] = {"path": path, "caption": caption}
+    return {"generated": True, "format": "pdf" if is_pdf else "pptx", "note": f"The {fmt_label} file is being sent to this chat now."}
