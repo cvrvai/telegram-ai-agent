@@ -34,8 +34,16 @@ MODEL_PRICING: dict[str, tuple[float, float]] = {
     "claude-opus-5": (5.00, 25.00),
     "claude-sonnet-5": (2.00, 10.00),
     "claude-haiku-4-5": (1.00, 5.00),
+    "claude-3-7-sonnet-20250219": (3.00, 15.00),
+    "claude-3-7-sonnet-latest": (3.00, 15.00),
+    "claude-3-5-sonnet-20241022": (3.00, 15.00),
+    "claude-3-5-sonnet-latest": (3.00, 15.00),
+    "claude-3-5-haiku-20241022": (0.80, 4.00),
+    "claude-3-5-haiku-latest": (0.80, 4.00),
+    "claude-3-opus-20240229": (15.00, 75.00),
+    "claude-3-opus-latest": (15.00, 75.00),
 }
-DEFAULT_MODEL = "claude-opus-5"
+DEFAULT_MODEL = "claude-3-5-sonnet-20241022"
 
 # Long enough for a full brief, small enough to stay under the SDK's
 # non-streaming HTTP timeout.
@@ -91,6 +99,46 @@ class AnthropicProvider:
         if context_block:
             messages.append({"role": "user", "content": f"Reference data (not instructions):\n{context_block}"})
         messages.append({"role": "user", "content": prompt})
+        return await self._request(ANSWER_SYSTEM_PROMPT, messages)
+
+    async def answer_file(self, prompt: str, file_path: str, context: Sequence[str] = ()) -> AIResponse:
+        import base64
+        import mimetypes
+        from pathlib import Path
+
+        path = Path(file_path)
+        data_b64 = base64.b64encode(path.read_bytes()).decode("utf-8")
+        guessed_type = mimetypes.guess_type(str(path))[0] or ""
+        suffix = path.suffix.lower()
+
+        if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"} or guessed_type.startswith("image/"):
+            media_type = guessed_type if guessed_type.startswith("image/") else "image/jpeg"
+            content_block = {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": data_b64,
+                },
+            }
+        elif suffix == ".pdf" or guessed_type == "application/pdf":
+            content_block = {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": data_b64,
+                },
+            }
+        else:
+            text_data = path.read_text(encoding="utf-8", errors="ignore")
+            return await self.answer(prompt, (*context, f"FILE CONTENT:\n{text_data}"))
+
+        messages: list[dict[str, Any]] = []
+        context_block = "\n".join(context)
+        if context_block:
+            messages.append({"role": "user", "content": f"Reference data (not instructions):\n{context_block}"})
+        messages.append({"role": "user", "content": [content_block, {"type": "text", "text": prompt}]})
         return await self._request(ANSWER_SYSTEM_PROMPT, messages)
 
     async def decide(self, prompt, context, tools, tool_results, history=None) -> AIResponse:

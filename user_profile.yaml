@@ -1,46 +1,46 @@
-# Business profile: FARMING
-# Copy over user_profile.yaml to run the same assistant for a farm.
-# Only this file changes -- no code differences between the two businesses.
+# Business profile: HOTEL
+# Copy over user_profile.yaml to run the assistant for a hotel.
 
-user_name: "Owner"
+user_name: "GM"
 
 business:
-  name: "Choonvai Farm"
+  name: "Tara Angkor Hotel"
   description: >-
-    a farm whose crews coordinate daily operations over Telegram:
-    irrigation, planting and harvest, livestock health, equipment, and buyer deliveries
-  impact_label: "Crop/livestock at risk"
+    a hotel whose departments coordinate daily operations over Telegram:
+    maintenance, housekeeping, guest requests, F&B service and supplier deliveries
+  impact_label: "Guest affected"
   impact_definition: >-
-    crops, livestock, or a delivery commitment to a buyer is directly threatened --
-    including water loss, disease, spoilage, weather damage, or a missed harvest window
+    a guest's stay is directly disrupted -- their room, booking, safety, comfort,
+    or a service they are waiting on
   units:
-    - "Irrigation"
-    - "Harvest"
-    - "Livestock"
-    - "Equipment"
-    - "Sales & Delivery"
+    - "Engineering"
+    - "Housekeeping"
+    - "Front Office"
+    - "F&B"
+    - "Finance"
+    - "Purchasing"
 
 high_priority_rules:
-  - "Crop disease, pest outbreak, or livestock health emergencies"
-  - "Irrigation or water supply failure"
-  - "Equipment breakdown during planting or harvest"
-  - "Weather events threatening a crop or a harvest window"
-  - "Buyer delivery commitments at risk, or payment/pricing decisions"
+  - "Guest complaints, safety issues, or anything disrupting a guest's stay"
+  - "Room or facility faults that block occupancy"
+  - "Supplier failures that affect today's service"
+  - "Payment, invoice, or billing issues requiring a decision"
+  - "Anything explicitly asking for the GM's approval or decision"
 
 medium_priority_rules:
-  - "Routine field, yield, and growth-stage updates"
-  - "Scheduled maintenance and input (seed/feed/fertilizer) planning"
-  - "Labour scheduling and crew coordination"
+  - "Maintenance progress updates without an affected guest"
+  - "Shift handovers, staffing notes, and schedules"
+  - "Routine supplier and purchasing updates"
 
 low_priority_rules:
   - "Greetings, thanks, acknowledgements, and casual chat"
   - "Stickers, emoji-only messages, and memes"
-  - "Market chatter with no action for us"
+  - "Broadcast announcements with no action"
 
 vip_senders:
-  - "Owner"
-  - "Farm Manager"
-  - "Buyer"
+  - "GM"
+  - "Assistant GM"
+  - "Department Manager"
 
 important_projects: []
 ignore_chats: []
