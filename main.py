@@ -1347,10 +1347,19 @@ class TelegramPriorityApp:
         sources = TelegramSources(lambda: self.telethon_client, self.business_access.owner_id,
                                   agent_state, self.focused_chat_ids, self.business_access)
         self.conversation = TelegramConversation(self.agent_runtime, sources, agent_state)
-        logger.info("Interactive bot message and callback handlers registered")
+        bot_me = await bot_client.get_me()
+        bot_id = bot_me.id if bot_me else None
 
-        @bot_client.on(events.NewMessage)
+        @bot_client.on(events.NewMessage(incoming=True))
         async def on_bot_message(event):
+            # Ignore outgoing messages or messages sent by the bot itself to prevent infinite self-reply loops
+            if getattr(event, "out", False):
+                return
+            if bot_id and getattr(event, "sender_id", None) == bot_id:
+                return
+            if getattr(getattr(event, "sender", None), "bot", False):
+                return
+
             # Group conversations are opt-in and only respond to a mention or
             # reply. Ordinary group traffic remains silent.
             setup_here = (
@@ -1603,7 +1612,7 @@ class TelegramPriorityApp:
 
                     # Check if the user's caption is an instruction to send/forward this document
                     send_file_pattern = re.compile(
-                        r'^(?:please\s+)?(?:send|forward|share|deliver)\s+(?:this\s+)?(?:[a-zA-Z0-9_\.-]+\s+)?(?:to|with)\s+([^:\n]+?)(?:(?::|\s+with\s+(?:message|caption|text)[:\s]+)(.*))?$',
+                        r'^(?:(?:ok|okay|hey|hi|hello)?\s*,?\s*)?(?:(?:can|could|will|would)\s+you\s+)?(?:(?:please|kindly)\s+)?(?:help\s+(?:me\s+)?(?:to\s+)?)?(?:send|forward|share|deliver)\s+(?:this\s+)?(?:[a-zA-Z0-9_\.-]+\s+)?(?:to|with)\s+([^:\n]+?)(?:(?::|\s+with\s+(?:message|caption|text)[:\s]+)(.*))?$',
                         re.IGNORECASE
                     )
                     m = send_file_pattern.match(text) if text else None
@@ -1843,7 +1852,7 @@ class TelegramPriorityApp:
                     await event.respond("⚠️ I could not fetch that public source. Check the URL and try again.", buttons=get_main_menu())
             # Outbound file draft from recent attachment if user says "send this pdf to <recipient>"
             send_file_pattern = re.compile(
-                r'^(?:please\s+)?(?:send|forward|share|deliver)\s+(?:this\s+)?(?:[a-zA-Z0-9_\.-]+\s+)?(?:to|with)\s+([^:\n]+?)(?:(?::|\s+with\s+(?:message|caption|text)[:\s]+)(.*))?$',
+                r'^(?:(?:ok|okay|hey|hi|hello)?\s*,?\s*)?(?:(?:can|could|will|would)\s+you\s+)?(?:(?:please|kindly)\s+)?(?:help\s+(?:me\s+)?(?:to\s+)?)?(?:send|forward|share|deliver)\s+(?:this\s+)?(?:[a-zA-Z0-9_\.-]+\s+)?(?:to|with)\s+([^:\n]+?)(?:(?::|\s+with\s+(?:message|caption|text)[:\s]+)(.*))?$',
                 re.IGNORECASE
             )
             file_match = send_file_pattern.match(text) if text else None
