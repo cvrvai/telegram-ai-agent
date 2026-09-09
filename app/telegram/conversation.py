@@ -77,11 +77,16 @@ class TelegramConversation:
             await event.respond("Cancelled. No new access was granted.", parse_mode=None)
             return True
         if pending["state"] == "selecting" and not pending.get("payload", {}).get("access_view") and not text.startswith("/"):
-            # Clear new requests leave selection; otherwise plain text searches.
-            if not any(word in text.casefold().split() for word in {"summarize", "summarise", "check", "read", "hello", "hi"}):
+            query = text.strip()
+            for prefix in ("search ", "find ", "filter "):
+                if query.casefold().startswith(prefix):
+                    query = query[len(prefix):].strip()
+                    break
+            new_intent = any(word in query.casefold().split() for word in {"summarize", "summarise", "hello", "hi"})
+            if not new_intent or text.casefold().startswith(("search ", "find ", "filter ")):
                 payload = pending["payload"]
-                payload["args"]["hint"] = text
-                payload["candidates"] = self.sources.matches(payload["directory"], text, payload["args"]["kind"])
+                payload["args"]["hint"] = query
+                payload["candidates"] = self.sources.matches(payload["directory"], query, payload["args"]["kind"])
                 updated = await self.store.transition(pending, ["selecting"], "selecting", payload=payload)
                 if updated:
                     await self.render(event, updated)

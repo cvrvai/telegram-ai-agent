@@ -95,13 +95,50 @@ class TelegramSources:
     @staticmethod
     def matches(rows, hint, kind="all"):
         candidates = [row for row in rows if kind == "all" or row["kind"] == kind]
-        needle = normalize(hint)
+        if not hint or not str(hint).strip():
+            return candidates
+
+        raw_hint = str(hint).strip().casefold()
+        clean_hint = re.sub(r'\b(can\s+you|please|check|read|look\s+at|open|view|the|group|chat|channel|team)\b', '', raw_hint).strip()
+        needle = normalize(clean_hint or raw_hint)
+
         if needle in {"saved", "save", "savedmessage", "savedmessages", "savemessages", "me"}:
             return [row for row in candidates if row["self"]]
-        if not needle:
-            return candidates
+
+        # 1. Exact match on title or username
         exact = [row for row in candidates if needle in {normalize(row["title"]), normalize(row["username"])}]
-        return exact or [row for row in candidates if needle in normalize(row["title"]) or needle in normalize(row["username"])]
+        if exact:
+            return exact
+
+        # 2. Substring match on entire needle
+        substr = [row for row in candidates if needle and (needle in normalize(row["title"]) or needle in normalize(row["username"]))]
+        if substr:
+            return substr
+
+        # 3. Multi-token match: all tokens present in normalized title or username
+        tokens = [normalize(t) for t in (clean_hint or raw_hint).split() if normalize(t)]
+        if len(tokens) > 1:
+            token_matches = [
+                row for row in candidates
+                if all(t in normalize(row["title"]) or t in normalize(row["username"]) for t in tokens)
+            ]
+            if token_matches:
+                return token_matches
+
+        # 4. Ranked token match: any token present, ordered by score
+        if tokens:
+            scored = []
+            for row in candidates:
+                title_norm = normalize(row["title"])
+                user_norm = normalize(row["username"])
+                score = sum(1 for t in tokens if t in title_norm or t in user_norm)
+                if score > 0:
+                    scored.append((score, row))
+            if scored:
+                scored.sort(key=lambda x: -x[0])
+                return [row for _, row in scored]
+
+        return []
 
     async def permitted(self, actor, source, run):
         # A one-run approval is bound to the exact source AND connected account.
