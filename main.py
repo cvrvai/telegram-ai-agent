@@ -1353,12 +1353,13 @@ class TelegramPriorityApp:
         @bot_client.on(events.NewMessage(incoming=True))
         async def on_bot_message(event):
             # Ignore outgoing messages or messages sent by the bot itself to prevent infinite self-reply loops
-            if getattr(event, "out", False):
+            if getattr(event, "out", False) or getattr(getattr(event, "message", None), "out", False):
                 return
             if bot_id and getattr(event, "sender_id", None) == bot_id:
                 return
             if getattr(getattr(event, "sender", None), "bot", False):
                 return
+            logger.info("Bot received incoming message from %s (chat %s): %s", getattr(event, "sender_id", None), event.chat_id, (event.raw_text or "")[:60])
 
             # Group conversations are opt-in and only respond to a mention or
             # reply. Ordinary group traffic remains silent.
