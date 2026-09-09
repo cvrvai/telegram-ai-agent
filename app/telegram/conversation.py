@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import logging
 import os
 from datetime import timezone
@@ -102,7 +103,6 @@ class TelegramConversation:
         run_id = record["_id"]
         task = asyncio.current_task()
         self.tasks.setdefault(key, {})[record["_id"]] = task
-        progress = None
         try:
             async with self.locks.setdefault(key, asyncio.Lock()):
                 async with self.slots:
@@ -113,7 +113,13 @@ class TelegramConversation:
                     pending = await self.store.pending(*key)
                     if pending:
                         await self.store.transition(pending, ["selecting", "awaiting_approval"], "cancelled")
-                    progress = await event.respond("Reading the selected chat…" if resume else "Thinking…", parse_mode=None)
+                    try:
+                        client = getattr(event, "client", None)
+                        chat_id = getattr(event, "chat_id", None)
+                        typing_cm = client.action(chat_id, "typing") if client and chat_id and hasattr(client, "action") else nullcontext()
+                    except Exception:
+                        typing_cm = nullcontext()
+
                     session = await self.store.load_session(*key)
                     session["_run_id"] = record["_id"]
                     # Cleared on load, not just after use: a stale marker from
@@ -137,7 +143,8 @@ class TelegramConversation:
                         await self.store.save_session(*key, session)
                         return answer
 
-                    answer = await asyncio.wait_for(work(), self.timeout)
+                    async with typing_cm:
+                        answer = await asyncio.wait_for(work(), self.timeout)
                     completed = await self.store.transition(record, ["running"], "completed")
                     if completed:
                         # Reject accidental internal payloads even from a native final reply.
@@ -154,9 +161,8 @@ class TelegramConversation:
                             action_id = pending_draft["id"]
                             buttons = [[Button.inline("✅ Approve", data=f"action_approve_{action_id}".encode()),
                                         Button.inline("❌ Reject", data=f"action_deny_{action_id}".encode())]]
-                        await _send_formatted(progress.edit, parts[0], buttons=buttons)
-                        for part in parts[1:]:
-                            await _send_formatted(event.respond, part)
+                        for i, part in enumerate(parts):
+                            await _send_formatted(event.respond, part, buttons=buttons if i == 0 else None)
                         # A tool may have produced a document (the weekly deck).
                         # Agents can only return text, so the file is handed over
                         # via the session and sent here.
@@ -172,16 +178,12 @@ class TelegramConversation:
                                 except OSError:
                                     pass
         except InteractionRequired as interaction:
-            if progress:
-                await progress.edit("Choose the Telegram chat below." if interaction.state == "selecting" else "Please choose how to allow access below.", parse_mode=None)
             suspended = await self.store.transition(record, ["running"], interaction.state, payload=interaction.payload)
             if suspended:
                 await self.render(event, suspended)
         except asyncio.CancelledError:
             if record:
                 await self.store.transition(record, ["queued", "running"], "cancelled")
-            if progress:
-                await progress.edit("Stopped.", parse_mode=None)
         except Exception as exc:
             logger.warning("Agent run %s failed (%s)", record and record["_id"], type(exc).__name__)
             if isinstance(exc, httpx.HTTPStatusError):
@@ -200,10 +202,7 @@ class TelegramConversation:
                 message = "I couldn't complete that request. Check the connected Telegram account and AI service, then try again."
             failed = await self.store.transition(record, ["running", "queued"], "failed", error_code=type(exc).__name__)
             if failed:
-                if progress:
-                    await progress.edit(message, parse_mode=None)
-                else:
-                    await event.respond(message, parse_mode=None)
+                await event.respond(message, parse_mode=None)
         finally:
             self.tasks.get(key, {}).pop(run_id, None)
 

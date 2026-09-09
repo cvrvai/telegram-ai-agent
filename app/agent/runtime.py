@@ -39,7 +39,7 @@ class ProviderDecisionPlanner:
             '{"kind":"final|tool_call|clarification","message":string|null,"tool_name":string|null,'
             '"arguments":object,"question":string|null,"candidate_options":[],"explicitness":"read|suggest|command|speculative"}. '
             "Use only registered tools. Never invent internal IDs; use public keys or hints. "
-            "For greetings and casual conversation, reply naturally and briefly; do not suggest tasks, projects, or workspace actions unless the user asks. "
+            "For greetings and casual conversation, reply naturally, warmly, and dynamically; avoid repetitive or generic chatbot boilerplate (such as 'Hello! How can I help you today?'). Speak like an intelligent human partner. Do not suggest tasks, projects, or workspace actions unless the user asks. "
             "For Telegram source requests, use search_messages with a non-empty hint; search_memory is only for saved assistant conversation memory. "
             "If the requested source is outside the authorized source chat IDs, ask the owner for permission instead of trying another tool. "
             "Use clarification for ambiguity and speculative for maybe/could suggestions. "

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import nullcontext
 import json
 import re
 import sys
@@ -1010,8 +1011,7 @@ class TelegramPriorityApp:
             await safe_edit_or_respond(event, text, get_main_menu())
 
         async def render_home(event):
-            text = "Hello! How can I help you today?"
-            await safe_edit_or_respond(event, text)
+            await safe_edit_or_respond(event, get_welcome_text(), get_main_menu())
 
         async def render_my_work(event, status="open"):
             user_id = getattr(event, "sender_id", None)
@@ -1420,12 +1420,6 @@ class TelegramPriorityApp:
 
             if await self.conversation.controls(event):
                 return
-            if text_lower in {"cancel", "stop", "never mind", "nevermind", "/cancel"}:
-                self._setup_state.pop(user_id, None)
-                self._pm_state.pop(user_id, None)
-                await event.respond("Cancelled." if text_lower != "stop" else "There is no active request to stop.")
-                return
-
             # Direct search input: after pressing Search, a plain message such
             # as "daivai" is treated as the query instead of an AI question.
             state = self._setup_state.get(user_id) if user_id is not None else None
@@ -1462,51 +1456,39 @@ class TelegramPriorityApp:
                     await event.respond(f"⚠️ {escape(str(exc))}", parse_mode="HTML", buttons=get_main_menu())
                 return
 
-            # Automatically load /manage or /groups if user intent matches
+            # Automatically load /manage or /groups if user explicitly asks to manage setup
             group_intent_phrases = {
-                "select group", "select groups", "add group", "add groups", "more group", "more groups",
-                "choose group", "choose groups", "pick group", "pick groups", "read group", "read groups",
-                "monitor group", "monitor groups", "group access", "group list", "manage group", "manage groups"
+                "select group", "select groups", "add group", "add groups", "manage group", "manage groups",
+                "/groups", "/group", "/setup groups"
             }
             people_intent_phrases = {
                 "select people", "select person", "select contact", "select contacts",
-                "add people", "add person", "add contact", "add contacts", "more contact", "more people"
+                "add people", "add person", "add contact", "add contacts", "/people", "/setup people"
             }
             manage_intent_phrases = {
-                "manage", "manage bot", "manage access", "manage permissions", "bot access",
-                "revoke", "revoke access", "revoke permission", "remove group", "remove chat",
-                "stop monitoring", "permissions", "who can access", "who has access", "setup bot"
+                "manage bot", "manage access", "manage permissions", "bot access",
+                "/manage", "/access", "/revoke", "/permissions", "setup bot"
             }
-            is_group_intent = any(phrase in text_lower for phrase in group_intent_phrases)
-            is_people_intent = any(phrase in text_lower for phrase in people_intent_phrases)
-            is_manage_intent = any(phrase in text_lower for phrase in manage_intent_phrases)
+            is_group_intent = text_lower in group_intent_phrases
+            is_people_intent = text_lower in people_intent_phrases
+            is_manage_intent = text_lower in manage_intent_phrases
 
             if event.is_private and user_id == self.business_access.owner_id:
-                if is_group_intent or text_lower in {"/groups", "/group", "/setup groups"}:
+                if is_group_intent:
                     state = setup_state(user_id)
                     state["picker_query"] = ""
                     state["awaiting_search"] = False
                     await render_setup_chats(event, user_id, "groups", 0)
                     return
-                if is_people_intent or text_lower in {"/people", "/setup people"}:
+                if is_people_intent:
                     state = setup_state(user_id)
                     state["picker_query"] = ""
                     state["awaiting_search"] = False
                     await render_setup_chats(event, user_id, "people", 0)
                     return
-                if is_manage_intent or text_lower in {"/manage", "/access", "/revoke", "/permissions"}:
+                if is_manage_intent:
                     await render_access_view(event)
                     return
-                if not self._focus_settings:
-                    summary_phrases = {"summary", "summarize", "digest", "brief", "what happened", "updates"}
-                    if any(phrase in text_lower for phrase in summary_phrases) and not any(k in text_lower for k in ("project", "task", "event", "calendar", "email", "send", "draft")):
-                        await event.respond(
-                            "ℹ️ <b>No chats or groups are currently monitored.</b>\n\n"
-                            "Please select which groups or people you would like the bot to read:",
-                            parse_mode="HTML"
-                        )
-                        await render_access_view(event)
-                        return
 
             # Owner-only focus setup. This is intentionally separate from the
             # ordinary business commands so the owner can configure the
@@ -2180,20 +2162,25 @@ class TelegramPriorityApp:
                 await self.conversation.handle(event, text)
                 return
             # Other profiles do not inherit the owner's Telegram history.
-            progress = await event.respond("Thinking…")
             try:
-                answer = await asyncio.wait_for(
-                    assistant.answer(user_id, event.chat_id, chat_type, text),
-                    timeout=self.cfg.ai_request_timeout_seconds,
-                )
+                client = getattr(event, "client", None)
+                chat_id = getattr(event, "chat_id", None)
+                action_cm = client.action(chat_id, "typing") if client and chat_id and hasattr(client, "action") else nullcontext()
+            except Exception:
+                action_cm = nullcontext()
+            try:
+                async with action_cm:
+                    answer = await asyncio.wait_for(
+                        assistant.answer(user_id, event.chat_id, chat_type, text),
+                        timeout=self.cfg.ai_request_timeout_seconds,
+                    )
                 from app.telegram.conversation import chunks
                 parts = list(chunks(answer))
-                await progress.edit(parts[0], parse_mode=None)
-                for part in parts[1:]:
+                for part in parts:
                     await event.respond(part, parse_mode=None)
             except Exception:
                 logger.warning("Assistant profile request failed")
-                await progress.edit("I couldn't complete that request. Please try again.", parse_mode=None)
+                await event.respond("I couldn't complete that request. Please try again.", parse_mode=None)
 
         # Callback queries for inline buttons - EDIT IN PLACE (NO SPAM)
         @bot_client.on(events.CallbackQuery)
