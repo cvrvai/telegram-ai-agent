@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 # Ensure UTF-8 output on Windows consoles
 if sys.platform == "win32":
@@ -59,6 +59,60 @@ logging.basicConfig(
     handlers=[RichHandler(rich_tracebacks=True, console=console)],
 )
 logger = logging.getLogger("main")
+
+
+def parse_send_file_instruction(text: str) -> Optional[Tuple[str, str]]:
+    """Parse instructions to send, forward, or share a file/media from user text."""
+    if not text:
+        return None
+
+    cleaned_lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    if not cleaned_lines:
+        return None
+
+    pattern = re.compile(
+        r'(?:^|\b)(?:can|could|will|would)?\s*(?:you\s+)?(?:please\s+|kindly\s+)?(?:help\s+(?:me\s+)?(?:to\s+)?)?'
+        r'(?:send|forward|share|deliver|give|pass)\s+'
+        r'(?:(?:this|the|it|my)\s+)?(?:[a-zA-Z0-9_\.-]+\s+)?'
+        r'(?:to|with|for)\s+'
+        r'([^:\n\?]+?)'
+        r'(?:\s+(?:please|kindly|thanks|thank you))?'
+        r'(?:(?::|\s+with\s+(?:message|caption|text)[:\s]+|\s+saying[:\s]+)(.*))?[\?\.]*$',
+        re.IGNORECASE
+    )
+
+    # 1. Search line by line from the end (instructions typically appear on the final line)
+    for l in reversed(cleaned_lines):
+        trimmed = re.sub(
+            r'^(?:(?:good\s+(?:morning|afternoon|evening|day))|hi|hello|hey|ok|okay)\s*[,!.]*\s*',
+            '',
+            l,
+            flags=re.IGNORECASE
+        )
+        target_to_search = trimmed if trimmed else l
+        m = pattern.search(target_to_search)
+        if m:
+            recipient = m.group(1).strip(' ?.!,')
+            caption = (m.group(2) or '').strip(' "\'')
+            if recipient:
+                return recipient, caption
+
+    # 2. Search across combined lines with leading greeting stripped
+    combined = ' '.join(cleaned_lines)
+    trimmed_combined = re.sub(
+        r'^(?:(?:good\s+(?:morning|afternoon|evening|day))|hi|hello|hey|ok|okay)\s*[,!.]*\s*',
+        '',
+        combined,
+        flags=re.IGNORECASE
+    )
+    m = pattern.search(trimmed_combined if trimmed_combined else combined)
+    if m:
+        recipient = m.group(1).strip(' ?.!,')
+        caption = (m.group(2) or '').strip(' "\'')
+        if recipient:
+            return recipient, caption
+
+    return None
 
 
 class TelegramPriorityApp:
@@ -1599,20 +1653,25 @@ class TelegramPriorityApp:
                     }
 
                     # Check if the user's caption is an instruction to send/forward this document
-                    send_file_pattern = re.compile(
-                        r'^(?:(?:ok|okay|hey|hi|hello)?\s*,?\s*)?(?:(?:can|could|will|would)\s+you\s+)?(?:(?:please|kindly)\s+)?(?:help\s+(?:me\s+)?(?:to\s+)?)?(?:send|forward|share|deliver)\s+(?:this\s+)?(?:[a-zA-Z0-9_\.-]+\s+)?(?:to|with)\s+([^:\n]+?)(?:(?::|\s+with\s+(?:message|caption|text)[:\s]+)(.*))?$',
-                        re.IGNORECASE
-                    )
-                    m = send_file_pattern.match(text) if text else None
-                    if m:
-                        recipient_hint = m.group(1).strip()
-                        custom_caption = (m.group(2) or "").strip()
+                    parsed_send = parse_send_file_instruction(text)
+                    if parsed_send:
+                        recipient_hint, custom_caption = parsed_send
                         directory = await self.conversation.sources.directory()
                         candidates = self.conversation.sources.matches(directory, recipient_hint)
+                        target_id = None
+                        target_title = None
                         if candidates:
                             target_id = str(candidates[0]["id"])
                             target_title = candidates[0]["title"]
-                        else:
+                        elif self.telethon_client and self.telethon_client.is_connected():
+                            try:
+                                ent = await self.telethon_client.get_entity(recipient_hint)
+                                target_id = str(getattr(ent, "id", recipient_hint))
+                                target_title = getattr(ent, "title", None) or getattr(ent, "first_name", None) or recipient_hint
+                            except Exception:
+                                pass
+
+                        if not target_id:
                             target_id = recipient_hint
                             target_title = recipient_hint
 
@@ -1651,7 +1710,17 @@ class TelegramPriorityApp:
                     await event.respond(answer, parse_mode="HTML", buttons=get_main_menu())
                 except (ValueError, RuntimeError) as exc:
                     logger.warning("Document processing error: %s", exc)
-                    await event.respond(f"⚠️ Could not process document: {escape(str(exc))}", parse_mode="HTML")
+                    if "does not support image analysis" in str(exc).lower():
+                        await event.respond(
+                            f"📎 I received your image (<b>{escape(media_name)}</b>).\n\n"
+                            f"The configured AI provider is running a text/document model without image vision analysis enabled.\n\n"
+                            f"💡 <i>Tip: If you would like to send or forward this image to someone, just reply with:</i>\n"
+                            f"<code>send this to [contact name]</code>",
+                            parse_mode="HTML",
+                            buttons=get_main_menu(),
+                        )
+                    else:
+                        await event.respond(f"⚠️ Could not process document: {escape(str(exc))}", parse_mode="HTML")
                 except PermissionError:
                     await event.respond("🔒 Access not approved.")
                 except BudgetExceeded:
@@ -1839,22 +1908,27 @@ class TelegramPriorityApp:
                     logger.warning("Live fetch failed: %s", exc)
                     await event.respond("⚠️ I could not fetch that public source. Check the URL and try again.", buttons=get_main_menu())
             # Outbound file draft from recent attachment if user says "send this pdf to <recipient>"
-            send_file_pattern = re.compile(
-                r'^(?:(?:ok|okay|hey|hi|hello)?\s*,?\s*)?(?:(?:can|could|will|would)\s+you\s+)?(?:(?:please|kindly)\s+)?(?:help\s+(?:me\s+)?(?:to\s+)?)?(?:send|forward|share|deliver)\s+(?:this\s+)?(?:[a-zA-Z0-9_\.-]+\s+)?(?:to|with)\s+([^:\n]+?)(?:(?::|\s+with\s+(?:message|caption|text)[:\s]+)(.*))?$',
-                re.IGNORECASE
-            )
-            file_match = send_file_pattern.match(text) if text else None
-            if file_match and any(w in text_lower for w in ("file", "pdf", "doc", "document", "attachment", "image", "photo", "this")):
+            parsed_followup_send = parse_send_file_instruction(text)
+            if parsed_followup_send:
                 recent = self._last_user_attachment.get(user_id)
                 if recent and Path(recent["path"]).is_file() and (time.time() - recent.get("timestamp", 0) < 1800):
-                    recipient_hint = file_match.group(1).strip()
-                    custom_caption = (file_match.group(2) or "").strip()
+                    recipient_hint, custom_caption = parsed_followup_send
                     directory = await self.conversation.sources.directory()
                     candidates = self.conversation.sources.matches(directory, recipient_hint)
+                    target_id = None
+                    target_title = None
                     if candidates:
                         target_id = str(candidates[0]["id"])
                         target_title = candidates[0]["title"]
-                    else:
+                    elif self.telethon_client and self.telethon_client.is_connected():
+                        try:
+                            ent = await self.telethon_client.get_entity(recipient_hint)
+                            target_id = str(getattr(ent, "id", recipient_hint))
+                            target_title = getattr(ent, "title", None) or getattr(ent, "first_name", None) or recipient_hint
+                        except Exception:
+                            pass
+
+                    if not target_id:
                         target_id = recipient_hint
                         target_title = recipient_hint
 
