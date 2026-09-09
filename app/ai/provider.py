@@ -55,6 +55,8 @@ def agent_system_prompt() -> str:
         "to create, make, or prepare slides, a PowerPoint presentation (.pptx), or a weekly report (e.g. "
         "'create the slide power point', 'prepare this week's meeting presentation', 'weekly report in PDF'), "
         "call generate_weekly_report. Set format='pdf' if the user requests PDF, or format='pptx' if slides or PowerPoint are requested. "
+        "For custom presentations, training decks, proposals, or PDF documents on any topic: "
+        "call create_custom_presentation, designing the slide titles, subtitles, bullet points, and tables. Set format='pdf' or format='pptx' accordingly. "
         "Use read_telegram_chat only when the user explicitly asks to read a specific chat's raw messages. "
         "Use select_telegram_chat when the user wants to choose/list/search groups or people. The application will show a native picker and request consent. "
         "Never claim access is denied just because a chat is not selected: call the Telegram tool so it can ask permission. "

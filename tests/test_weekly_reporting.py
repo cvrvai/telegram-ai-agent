@@ -131,6 +131,36 @@ class WeeklyReportingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(os.path.exists(pdf_file))
         self.assertTrue(pdf_file.endswith(".pdf"))
 
+    async def test_create_custom_presentation_pptx_and_pdf(self) -> None:
+        from app.reporting.custom_deck import CustomPresentationInput, SlideItem, create_custom_presentation
+
+        session = {}
+        context = SimpleNamespace(session=session)
+        slides = [
+            SlideItem(title="VIP Arrival SOP", subtitle="Tara Angkor Hotel", bullets=["Greet within 30s", "Offer cold towel"]),
+            SlideItem(title="Duty Roster", table_headers=["Unit", "Lead"], table_rows=[["Front Office", "Sokha"], ["Housekeeping", "Dara"]]),
+        ]
+
+        # 1. Custom PPTX
+        res_pptx = await create_custom_presentation(CustomPresentationInput(title="VIP SOP Deck", slides=slides, format="pptx"), context)
+        self.assertTrue(res_pptx["generated"])
+        self.assertEqual(res_pptx["format"], "pptx")
+        self.assertIn("pending_file", session)
+        pptx_path = session["pending_file"]["path"]
+        self.assertTrue(os.path.exists(pptx_path))
+        with open(pptx_path, "rb") as f:
+            self.assertEqual(f.read(4), b"PK\x03\x04")
+
+        # 2. Custom PDF
+        res_pdf = await create_custom_presentation(CustomPresentationInput(title="VIP SOP Guide", slides=slides, format="pdf"), context)
+        self.assertTrue(res_pdf["generated"])
+        self.assertEqual(res_pdf["format"], "pdf")
+        self.assertIn("pending_file", session)
+        pdf_path = session["pending_file"]["path"]
+        self.assertTrue(os.path.exists(pdf_path))
+        with open(pdf_path, "rb") as f:
+            self.assertEqual(f.read(4), b"%PDF")
+
 
 if __name__ == "__main__":
     unittest.main()

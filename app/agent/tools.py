@@ -24,6 +24,7 @@ from app.priority.situation_tools import (
     list_situations,
     resolve_situation,
 )
+from app.reporting.custom_deck import CustomPresentationInput, create_custom_presentation
 
 from .registry import ToolRegistry
 from .resolution import resolve_person, resolve_project, resolve_work_item
@@ -221,6 +222,7 @@ def build_registry(telegram: bool = False) -> ToolRegistry:
         ToolDefinition(name="get_situation", description="Full detail for one situation by id: status, responsible party, dependency, when it started, and its source messages. Use for 'who is responsible', 'when did this start', 'where did you get this'.", input_schema=SituationIdInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=False, approval_required=False, handler=get_situation),
         ToolDefinition(name="resolve_situation", description="Mark a situation resolved once the user confirms it is done.", input_schema=SituationIdInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=True, approval_required=False, handler=resolve_situation),
         ToolDefinition(name="generate_weekly_report", description="Build the weekly management PowerPoint (.pptx) or executive PDF document (.pdf) from this week's situations, department statuses, and pending approvals, and send it directly to the chat. Use when the user asks to create, make, or prepare slides, a PowerPoint (.pptx), a meeting presentation deck, or a weekly report in PPTX or PDF format.", input_schema=WeeklyReportInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=True, approval_required=False, handler=generate_weekly_report),
+        ToolDefinition(name="create_custom_presentation", description="Create an AI-designed PowerPoint (.pptx) or executive PDF (.pdf) on ANY topic (e.g. training SOPs, hotel improvement proposals, VIP protocols, strategic overviews). You design the slide titles, subtitles, bullet points, and tables; the system compiles and delivers the file directly to the chat.", input_schema=CustomPresentationInput, output_schema=JsonOutput, risk=read, required_permission="source.read", side_effect=True, approval_required=False, handler=create_custom_presentation),
         ToolDefinition(name="search_memory", description="Search the user's saved assistant conversation memory.", input_schema=HintInput, output_schema=JsonOutput, risk=read, required_permission="memory.read", side_effect=False, approval_required=False, handler=search_memory),
         ToolDefinition(name="change_work_status", description="Move a work item through the legal workflow.", input_schema=StatusInput, output_schema=JsonOutput, risk=write, required_permission="work.update", side_effect=True, approval_required=False, handler=change_work_status),
         ToolDefinition(name="change_priority", description="Change a work item's P0-P3 priority.", input_schema=PriorityInput, output_schema=JsonOutput, risk=write, required_permission="work.update", side_effect=True, approval_required=False, handler=change_priority),
